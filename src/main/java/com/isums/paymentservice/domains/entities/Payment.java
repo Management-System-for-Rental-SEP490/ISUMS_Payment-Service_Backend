@@ -1,8 +1,8 @@
-package domains.entities;
+package com.isums.paymentservice.domains.entities;
 
-import domains.enums.PaymentMethod;
-import domains.enums.PaymentStatus;
-import domains.enums.ReferenceType;
+import com.isums.paymentservice.domains.enums.PaymentMethod;
+import com.isums.paymentservice.domains.enums.PaymentStatus;
+import com.isums.paymentservice.domains.enums.ReferenceType;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;

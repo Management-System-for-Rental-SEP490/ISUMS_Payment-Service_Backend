@@ -1,4 +1,4 @@
-package domains.entities;
+package com.isums.paymentservice.domains.entities;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
