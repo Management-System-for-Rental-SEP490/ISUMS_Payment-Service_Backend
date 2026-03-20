@@ -1,8 +1,8 @@
-package domains.entities;
+package com.isums.paymentservice.domains.entities;
 
-import domains.enums.ActorType;
-import domains.enums.EventType;
-import domains.enums.LogStatus;
+import com.isums.paymentservice.domains.enums.ActorType;
+import com.isums.paymentservice.domains.enums.EventType;
+import com.isums.paymentservice.domains.enums.LogStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;

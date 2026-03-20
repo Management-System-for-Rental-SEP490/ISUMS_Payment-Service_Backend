@@ -1,6 +1,6 @@
-package domains.entities;
+package com.isums.paymentservice.domains.entities;
 
-import domains.enums.PolicyType;
+import com.isums.paymentservice.domains.enums.PolicyType;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;

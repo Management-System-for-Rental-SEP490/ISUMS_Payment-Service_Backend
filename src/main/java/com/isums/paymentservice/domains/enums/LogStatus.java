@@ -1,4 +1,4 @@
-package domains.enums;
+package com.isums.paymentservice.domains.enums;
 
 public enum LogStatus {
     PAYMENT_PENDING,

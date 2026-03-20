@@ -1,6 +1,6 @@
-package domains.entities;
+package com.isums.paymentservice.domains.entities;
 
-import domains.enums.InvoiceStatus;
+import com.isums.paymentservice.domains.enums.InvoiceStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
