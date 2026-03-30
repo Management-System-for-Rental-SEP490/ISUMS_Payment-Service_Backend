@@ -51,12 +51,7 @@ public class PaymentServiceImpl implements PaymentService {
 
     private final UserGrpcService userGrpcService;
 
-    // ── Tạo link thanh toán VNPay ─────────────────────────────────────────────
 
-    /**
-     * Amount lấy từ invoice — không cần FE gửi lên.
-     * IP lấy từ HttpServletRequest.
-     */
     @Override
     @Transactional
     public String createPaymentVNPayLink(CreatePaymentRequest request, HttpServletRequest httpRequest) {
@@ -70,7 +65,6 @@ public class PaymentServiceImpl implements PaymentService {
             throw new IllegalStateException("Invoice không ở trạng thái UNPAID. Trạng thái hiện tại: " + invoice.getStatus());
         }
 
-        // Tránh tạo trùng PENDING payment
         boolean hasPending = paymentRepository.existsByReferenceIdAndStatus(invoiceId, PaymentStatus.PENDING);
         if (hasPending) {
             Payment existing = paymentRepository

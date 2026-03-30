@@ -34,7 +34,7 @@ public class PaymentController {
             description = "Trả về tất cả hóa đơn của tenant hiện tại theo thứ tự dueDate tăng dần."
     )
     @GetMapping("/invoices")
-    @PreAuthorize("hasRole('USER')")
+//    @PreAuthorize("hasRole('TENANT')")
     public ApiResponse<List<RentalInvoice>> getMyInvoices(@AuthenticationPrincipal Jwt jwt) {
         UUID tenantId = UUID.fromString(jwt.getSubject());
         return ApiResponses.ok(
@@ -44,7 +44,7 @@ public class PaymentController {
 
     @Operation(summary = "Tạo link thanh toán VNPay (tenant đã login)")
     @PostMapping("/vnpay")
-//    @PreAuthorize("hasRole('USER')")
+//    @PreAuthorize("hasRole('TENANT')")
     public ApiResponse<String> createPaymentLink(@AuthenticationPrincipal Jwt jwt, @RequestBody @Valid CreatePaymentRequest request, HttpServletRequest httpRequest) {
         return ApiResponses.ok(paymentService.createPaymentVNPayLink(request, httpRequest), "Link thanh toán VNPay");
     }
@@ -56,7 +56,10 @@ public class PaymentController {
                     """
     )
     @GetMapping("/outsystem/invoices/{invoiceId}")
-    public ApiResponse<PublicInvoiceDto> getInvoiceOutsystem(@PathVariable UUID invoiceId) {
+    public ApiResponse<PublicInvoiceDto> getInvoiceOutsystem(@PathVariable UUID invoiceId, @RequestParam String token) {
+
+        paymentTokenService.validateToken(token, invoiceId);
+        paymentTokenService.refreshTtl(token);
         return ApiResponses.ok(paymentService.getPublicInvoice(invoiceId), "Success");
     }
 
@@ -69,10 +72,18 @@ public class PaymentController {
                     """
     )
     @PostMapping("/outsystem/vnpay")
-    public ApiResponse<String> createPaymentOutsystem(@RequestParam UUID invoiceId, @RequestBody(required = false) CreatePaymentRequest request,
+    public ApiResponse<String> createPaymentOutsystem(@RequestParam UUID invoiceId, @RequestParam String token, @RequestBody(required = false) CreatePaymentRequest request,
                                                       HttpServletRequest httpRequest) {
-        return ApiResponses.ok(paymentService.createPaymentVNPayLinkOutsystem(invoiceId, request != null ? request.bankCode() : null,
-                request != null ? request.locale() : null, httpRequest), "Link thanh toán VNPay");
+
+        paymentTokenService.validateToken(token, invoiceId);
+
+        return ApiResponses.ok(
+                paymentService.createPaymentVNPayLinkOutsystem(
+                        invoiceId,
+                        request != null ? request.bankCode() : null,
+                        request != null ? request.locale() : null,
+                        httpRequest),
+                "Link thanh toán VNPay");
     }
 
     @Operation(

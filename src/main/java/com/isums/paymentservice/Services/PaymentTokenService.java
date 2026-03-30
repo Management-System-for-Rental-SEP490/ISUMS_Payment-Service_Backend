@@ -9,14 +9,6 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.util.UUID;
 
-/**
- * Magic token cho tenant thanh toán hóa đơn mà không cần đăng nhập.
- *
- * <p>Key: payment:token:{token} → {invoiceId}:{tenantId}
- * <p>TTL: 7 ngày (đủ để tenant thanh toán).
- * <p>Không invalidate sau khi dùng — tenant có thể thanh toán lại nếu thất bại.
- * Token chỉ vô hiệu khi invoice đã PAID (check ở service layer).
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -29,8 +21,6 @@ public class PaymentTokenService {
 
     private static final String PREFIX = "payment:token:";
 
-    // ── Generate ──────────────────────────────────────────────────────────────
-
     public String generateToken(UUID invoiceId, UUID tenantId) {
         String token = UUID.randomUUID().toString().replace("-", "");
         redis.opsForValue().set(
@@ -41,13 +31,6 @@ public class PaymentTokenService {
         return token;
     }
 
-    // ── Validate ──────────────────────────────────────────────────────────────
-
-    /**
-     * Validate token.
-     * @return tenantId nếu hợp lệ
-     * @throws IllegalArgumentException nếu token không hợp lệ / hết hạn / sai invoiceId
-     */
     public UUID validateToken(String token, UUID invoiceId) {
         if (token == null || token.isBlank())
             throw new IllegalArgumentException("Token thanh toán không được để trống.");
@@ -69,17 +52,11 @@ public class PaymentTokenService {
         return tenantId;
     }
 
-    // ── Refresh TTL ───────────────────────────────────────────────────────────
-
-    /** Gia hạn TTL khi tenant mở lại link cũ */
     public void refreshTtl(String token) {
         if (token == null || token.isBlank()) return;
         redis.expire(PREFIX + token, Duration.ofDays(ttlDays));
     }
 
-    // ── Invalidate ────────────────────────────────────────────────────────────
-
-    /** Xóa token sau khi invoice PAID hoàn toàn */
     public void invalidateToken(String token) {
         if (token == null || token.isBlank()) return;
         redis.delete(PREFIX + token);

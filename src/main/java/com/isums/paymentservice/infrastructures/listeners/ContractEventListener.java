@@ -25,14 +25,6 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
-/**
- * Lắng nghe event khi hợp đồng COMPLETED:
- * 1. Tạo invoice tiền cọc + tiền thuê tháng đầu.
- * 2. Tạo payment magic token cho từng invoice.
- * 3. Gửi Kafka → notification-service → email tenant với link thanh toán.
- * <p>
- * Idempotent: dùng unique index (contractId, periodKey).
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -57,7 +49,6 @@ public class ContractEventListener {
             log.info("[Payment] ContractCompleted contractId={} tenantId={} deposit={} rent={}",
                     event.getContractId(), event.getTenantId(), event.getDepositAmount(), event.getRentAmount());
 
-            // Idempotency — dùng unique index (contractId, periodKey)
             if (invoiceRepository.existsByContractIdAndPeriodKey(event.getContractId(), "DEPOSIT")) {
                 log.warn("[Payment] Invoices already created contractId={}, skip", event.getContractId());
                 ack.acknowledge();
@@ -66,7 +57,6 @@ public class ContractEventListener {
 
             List<RentalInvoice> invoices = new ArrayList<>();
 
-            // 1. Invoice tiền cọc — due trong 3 ngày
             if (event.getDepositAmount() != null && event.getDepositAmount() > 0) {
                 invoices.add(RentalInvoice.builder()
                         .contractId(event.getContractId())
@@ -83,7 +73,6 @@ public class ContractEventListener {
                         .build());
             }
 
-            // 2. Invoice tiền thuê tháng đầu
             if (event.getRentAmount() != null && event.getRentAmount() > 0) {
                 Instant firstDue = calcFirstRentDue(event.getStartAt(), event.getPayDate());
                 String periodKey = "RENT_" + firstDue.atZone(VN).format(DateTimeFormatter.ofPattern("yyyyMM"));
@@ -106,7 +95,6 @@ public class ContractEventListener {
             invoiceRepository.saveAll(invoices);
             log.info("[Payment] Created {} invoices contractId={}", invoices.size(), event.getContractId());
 
-            // 3. Gửi email cho tenant nếu có email
             if (event.getTenantEmail() != null && !event.getTenantEmail().isBlank()) {
                 sendPaymentEmails(invoices, event);
             } else {
@@ -117,7 +105,7 @@ public class ContractEventListener {
 
         } catch (JacksonException e) {
             log.error("[Payment] Deserialize failed raw={}: {}", record.value(), e.getMessage());
-            ack.acknowledge(); // poison pill
+            ack.acknowledge();
         } catch (Exception e) {
             log.error("[Payment] Processing failed, will retry: {}", e.getMessage(), e);
             throw new RuntimeException(e);
@@ -152,13 +140,6 @@ public class ContractEventListener {
         }
     }
 
-    // ── Private: tính ngày đến hạn tiền thuê đầu tiên ────────────────────────
-
-    /**
-     * Tính ngày đến hạn tiền thuê đầu tiên.
-     * VD: startAt = 15/03, payDate = 5 → due = 05/04
-     * startAt = 01/03, payDate = 5 → due = 05/03
-     */
     private Instant calcFirstRentDue(Instant startAt, Integer payDate) {
         if (payDate == null || startAt == null) return startAt;
 
