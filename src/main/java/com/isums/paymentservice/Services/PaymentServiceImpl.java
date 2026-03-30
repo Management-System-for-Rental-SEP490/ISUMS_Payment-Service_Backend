@@ -200,8 +200,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public String createPaymentVNPayLinkOutsystem(UUID invoiceId, String bankCode, String locale, HttpServletRequest httpRequest) {
-        CreatePaymentRequest request = new CreatePaymentRequest(
-                invoiceId.toString(), bankCode, locale);
+        CreatePaymentRequest request = new CreatePaymentRequest(invoiceId.toString(), bankCode, locale);
         return createPaymentVNPayLink(request, httpRequest);
     }
 

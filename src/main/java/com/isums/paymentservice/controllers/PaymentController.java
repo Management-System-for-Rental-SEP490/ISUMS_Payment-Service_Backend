@@ -77,9 +77,7 @@ public class PaymentController {
 
         paymentTokenService.validateToken(token, invoiceId);
 
-        return ApiResponses.ok(
-                paymentService.createPaymentVNPayLinkOutsystem(
-                        invoiceId,
+        return ApiResponses.ok(paymentService.createPaymentVNPayLinkOutsystem(invoiceId,
                         request != null ? request.bankCode() : null,
                         request != null ? request.locale() : null,
                         httpRequest),
