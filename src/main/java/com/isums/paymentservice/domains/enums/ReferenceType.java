@@ -5,5 +5,6 @@ public enum ReferenceType {
     ISSUE,
     INVOICE,
     MAINTENANCE,
-    UTILITY
+    UTILITY,
+    MULTI_INVOICE
 }

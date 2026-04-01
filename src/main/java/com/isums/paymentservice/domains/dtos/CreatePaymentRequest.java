@@ -2,9 +2,11 @@ package com.isums.paymentservice.domains.dtos;
 
 import jakarta.validation.constraints.NotBlank;
 
+import java.util.List;
+
 public record CreatePaymentRequest(
 
-        @NotBlank String invoiceId,
+        @NotBlank List<String> invoiceIds,
 
         String bankCode,
 
