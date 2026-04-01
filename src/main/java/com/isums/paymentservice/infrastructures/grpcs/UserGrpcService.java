@@ -1,0 +1,23 @@
+package com.isums.paymentservice.infrastructures.grpcs;
+
+import com.isums.userservice.grpc.GetUserByIdRequest;
+import com.isums.userservice.grpc.UserServiceGrpc;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class UserGrpcService {
+
+    private final UserServiceGrpc.UserServiceBlockingStub userStub;
+
+    public String getTenantEmail(UUID tenantId) {
+        try {
+            return userStub.getUserById(GetUserByIdRequest.newBuilder().setUserId(tenantId.toString()).build()).getEmail();
+        } catch (Exception e) {
+            throw new IllegalStateException("Không lấy được email tenant: " + tenantId);
+        }
+    }
+}

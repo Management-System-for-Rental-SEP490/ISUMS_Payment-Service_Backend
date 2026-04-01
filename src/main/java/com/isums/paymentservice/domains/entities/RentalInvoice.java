@@ -1,11 +1,9 @@
 package com.isums.paymentservice.domains.entities;
 
 import com.isums.paymentservice.domains.enums.InvoiceStatus;
+import com.isums.paymentservice.domains.enums.InvoiceType;
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.UuidGenerator;
@@ -15,14 +13,15 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "rental_invoices", indexes = {
-        @Index(name = "idx_invoice_tenant", columnList = "tenant_id"),
-        @Index(name = "idx_invoice_contract_status", columnList = "contract_id, status"),
-        @Index(name = "idx_invoice_due_date", columnList = "due_date"),
-        @Index(name = "idx_invoice_period", columnList = "contract_id, period_key", unique = true)
+        @Index(name = "idx_invoice_tenant", columnList = "tenant_id,status"),
+        @Index(name = "idx_invoice_house", columnList = "house_id"),
+        @Index(name = "idx_invoice_contract", columnList = "contract_id,type"),
+        @Index(name = "idx_invoice_due", columnList = "due_date,status"),
+        @Index(name = "idx_invoice_period", columnList = "contract_id,period_key", unique = true)
 })
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Data
 @Builder
 public class RentalInvoice {
 
@@ -31,14 +30,18 @@ public class RentalInvoice {
     @UuidGenerator
     private UUID id;
 
-    @Column(name = "tenant_id")
+    @Column(name = "contract_id")
+    private UUID contractId;
+
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
     @Column(name = "house_id", nullable = false)
     private UUID houseId;
 
-    @Column(name = "contract_id", nullable = false)
-    private UUID contractId;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private InvoiceType type;
 
     @Column(name = "period_key", nullable = false)
     private String periodKey;
@@ -52,24 +55,39 @@ public class RentalInvoice {
     @Column(name = "penalty_amount")
     private Long penaltyAmount;
 
-    @Column(name = "total_amount")
+    @Column(name = "total_amount", nullable = false)
     private Long totalAmount;
 
-    @Column(name = "due_date")
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private InvoiceStatus status;
+
+    @Column(name = "due_date", nullable = false)
     private Instant dueDate;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false)
-    private InvoiceStatus status;
+    @Column(name = "rent_amount")
+    private Long rentAmount;
+
+    @Column(name = "pay_date")
+    private Integer payDate;
+
+    @Column(name = "contract_start_at")
+    private Instant contractStartAt;
+
+    @Column(name = "tenant_email", length = 320)
+    private String tenantEmail;
+
+    @Column(name = "is_new_account")
+    private Boolean isNewAccount;
 
     @Column(name = "paid_at")
     private Instant paidAt;
 
-    @Column(name = "created_at")
     @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    @Column(name = "updated_at")
     @UpdateTimestamp
+    @Column(name = "updated_at")
     private Instant updatedAt;
 }

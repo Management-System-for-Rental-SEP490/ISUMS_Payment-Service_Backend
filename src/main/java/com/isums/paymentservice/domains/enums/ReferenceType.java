@@ -2,5 +2,9 @@ package com.isums.paymentservice.domains.enums;
 
 public enum ReferenceType {
     HOUSE,
-    ISSUE
+    ISSUE,
+    INVOICE,
+    MAINTENANCE,
+    UTILITY,
+    MULTI_INVOICE
 }

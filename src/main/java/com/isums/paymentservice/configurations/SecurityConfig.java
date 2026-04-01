@@ -27,7 +27,12 @@ public class SecurityConfig {
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
                                 "/v3/api-docs",
-                                "/v3/api-docs/**"
+                                "/v3/api-docs/**",
+
+                                "/api/payments/vnpay/return",
+                                "/api/payments/outsystem/vnpay",
+                                "/api/payments/vnpay/ipn",
+                                "/api/payments/outsystem/invoices/*"
                         ).permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated()

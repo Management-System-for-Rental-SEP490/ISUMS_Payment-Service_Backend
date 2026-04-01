@@ -27,17 +27,25 @@ repositories {
 
 ext {
     set('springCloudVersion', "2025.1.0")
+    springGrpcVersion = "1.0.2"
 }
 
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.cloud:spring-cloud-starter-netflix-eureka-client'
+    implementation 'com.google.protobuf:protobuf-java:4.34.0-RC2'
     implementation "com.isums:proto-common:1.0-SNAPSHOT"
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.2'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-security-oauth2-resource-server'
+    implementation 'org.apache.kafka:kafka-streams'
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+    implementation 'org.springframework.grpc:spring-grpc-client-spring-boot-starter'
+    implementation 'org.springframework.grpc:spring-grpc-server-spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-session-data-redis'
     testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'org.springframework.kafka:spring-kafka-test'
     compileOnly 'org.projectlombok:lombok'
     runtimeOnly 'org.postgresql:postgresql'
     annotationProcessor 'org.projectlombok:lombok'
@@ -49,6 +57,7 @@ dependencies {
 dependencyManagement {
     imports {
         mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+        mavenBom "org.springframework.grpc:spring-grpc-dependencies:$springGrpcVersion"
     }
 }
 
