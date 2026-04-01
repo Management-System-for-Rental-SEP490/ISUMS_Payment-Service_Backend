@@ -114,7 +114,6 @@ public class PaymentServiceImpl implements PaymentService {
                 return VNPayIpnResponseFactory.from(VNPayIpnCode.INVALID_SIGNATURE);
             }
 
-            // ← TxnRef giờ là paymentId
             UUID paymentId = UUID.fromString(ipn.getVnp_TxnRef());
             Payment payment = paymentRepository.findById(paymentId).orElse(null);
 
@@ -205,7 +204,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public String createPaymentVNPayLinkOutsystem(UUID invoiceId, String bankCode, String locale, HttpServletRequest httpRequest) {
         CreatePaymentRequest request = new CreatePaymentRequest(
-                List.of(invoiceId.toString()), // ← wrap vào List
+                List.of(invoiceId.toString()),
                 bankCode,
                 locale
         );
@@ -235,8 +234,24 @@ public class PaymentServiceImpl implements PaymentService {
                     .paidAt(invoice.getPaidAt())
                     .build());
 
-            log.info("[Payment] PostPayment event sent invoiceId={} type={}",
+            log.info("[Payment] payment-paid-topic sent invoiceId={} type={}",
                     invoice.getId(), invoice.getType());
+
+            if (invoice.getType() == InvoiceType.DEPOSIT) {
+                kafka.send("deposit-paid-topic", DepositPaidEvent.builder()
+                        .invoiceId(invoice.getId())
+                        .contractId(invoice.getContractId())
+                        .tenantId(invoice.getTenantId())
+                        .houseId(invoice.getHouseId())
+                        .amount(invoice.getTotalAmount())
+                        .invoiceType(invoice.getType())
+                        .txnNo(txnNo)
+                        .paidAt(invoice.getPaidAt())
+                        .build());
+
+                log.info("[Payment] deposit-paid-topic sent invoiceId={}", invoice.getId());
+            }
+
         } catch (Exception e) {
             log.error("[Payment] handlePostPayment failed invoiceId={}: {}",
                     invoice.getId(), e.getMessage(), e);

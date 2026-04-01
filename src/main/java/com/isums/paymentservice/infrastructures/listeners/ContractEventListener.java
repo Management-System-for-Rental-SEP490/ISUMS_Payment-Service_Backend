@@ -52,9 +52,23 @@ public class ContractEventListener {
                     event.getContractId(), event.getTenantId(), event.getDepositAmount(), event.getRentAmount());
 
             if (invoiceRepository.existsByContractIdAndPeriodKey(event.getContractId(), "DEPOSIT")) {
-                log.warn("[Payment] Invoices already created contractId={}, skip", event.getContractId());
+                log.warn("[Payment] Already processed contractId={}, skip", event.getContractId());
                 ack.acknowledge();
                 return;
+            }
+
+            if (event.getSignedPdfUrl() != null
+                    && event.getTenantEmail() != null
+                    && !event.getTenantEmail().isBlank()) {
+                kafka.send("notification-email", SendEmailEvent.builder()
+                        .to(event.getTenantEmail())
+                        .templateCode("CONTRACT_COMPLETED")
+                        .params(Map.of(
+                                "contractId", event.getContractId().toString().substring(0, 8).toUpperCase(),
+                                "signedPdfUrl", event.getSignedPdfUrl()
+                        ))
+                        .build());
+                log.info("[Payment] CONTRACT_COMPLETED email queued to={}", event.getTenantEmail());
             }
 
             List<RentalInvoice> invoices = new ArrayList<>();
@@ -83,10 +97,12 @@ public class ContractEventListener {
             invoiceRepository.saveAll(invoices);
             log.info("[Payment] Created {} invoices contractId={}", invoices.size(), event.getContractId());
 
-            if (event.getTenantEmail() != null && !event.getTenantEmail().isBlank()) {
+            if (!invoices.isEmpty()
+                    && event.getTenantEmail() != null
+                    && !event.getTenantEmail().isBlank()) {
                 sendPaymentEmail(invoices, event);
-            } else {
-                log.warn("[Payment] tenantEmail null — skip email notification contractId={}", event.getContractId());
+            } else if (invoices.isEmpty()) {
+                log.warn("[Payment] No invoices created contractId={}", event.getContractId());
             }
 
             ack.acknowledge();
@@ -105,19 +121,23 @@ public class ContractEventListener {
         try {
             DepositPaidEvent event = objectMapper.readValue(record.value(), DepositPaidEvent.class);
 
-            // Lấy context từ DEPOSIT invoice đã lưu
+            log.info("[Payment] DepositPaid contractId={} tenantId={}",
+                    event.contractId(), event.tenantId());
+
             RentalInvoice depositInvoice = invoiceRepository
                     .findByContractIdAndType(event.contractId(), InvoiceType.DEPOSIT)
                     .orElse(null);
 
             if (depositInvoice == null || depositInvoice.getRentAmount() == null) {
-                log.warn("[Payment] No deposit invoice context contractId={}, skip", event.contractId());
+                log.warn("[Payment] No deposit context contractId={}, skip", event.contractId());
                 ack.acknowledge();
                 return;
             }
 
-            Instant firstRentDue = calcFirstRentDue(depositInvoice.getContractStartAt(), depositInvoice.getPayDate());
-            String periodKey = "RENT_" + firstRentDue.atZone(VN).format(DateTimeFormatter.ofPattern("yyyyMM"));
+            Instant firstRentDue = calcFirstRentDue(
+                    depositInvoice.getContractStartAt(), depositInvoice.getPayDate());
+            String periodKey = "RENT_" + firstRentDue.atZone(VN)
+                    .format(DateTimeFormatter.ofPattern("yyyyMM"));
 
             if (invoiceRepository.existsByContractIdAndPeriodKey(event.contractId(), periodKey)) {
                 log.warn("[Payment] MONTHLY_RENT already exists contractId={}, skip", event.contractId());
@@ -140,13 +160,18 @@ public class ContractEventListener {
                     .build();
             invoiceRepository.save(monthlyInvoice);
 
-            String token = paymentTokenService.generateToken(monthlyInvoice.getId(), event.tenantId());
-            String paymentUrl = outsystemPaymentUrl + "?invoiceId=" + monthlyInvoice.getId() + "&token=" + token;
+            String token = paymentTokenService.generateToken(
+                    monthlyInvoice.getId(), event.tenantId());
+            String paymentUrl = outsystemPaymentUrl
+                    + "?invoiceId=" + monthlyInvoice.getId()
+                    + "&token=" + token;
 
-            kafka.send("deposit-paid-topic-v2", DepositPaidEvent.builder()
+            kafka.send("deposit-paid-enriched-topic", DepositPaidEvent.builder()
                     .contractId(event.contractId())
                     .tenantId(event.tenantId())
+                    .houseId(event.houseId())
                     .isNewAccount(depositInvoice.getIsNewAccount())
+                    .tenantEmail(depositInvoice.getTenantEmail())
                     .firstRentPaymentUrl(paymentUrl)
                     .firstRentAmount(depositInvoice.getRentAmount())
                     .firstRentDueDate(firstRentDue)
@@ -157,7 +182,8 @@ public class ContractEventListener {
                     .houseId(event.houseId())
                     .build());
 
-            log.info("[Payment] MONTHLY_RENT created contractId={}", event.contractId());
+            log.info("[Payment] MONTHLY_RENT created + enriched event sent contractId={}",
+                    event.contractId());
             ack.acknowledge();
 
         } catch (JacksonException e) {

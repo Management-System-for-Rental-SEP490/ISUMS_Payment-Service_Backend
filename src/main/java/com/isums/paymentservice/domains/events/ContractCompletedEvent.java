@@ -25,4 +25,5 @@ public class ContractCompletedEvent {
     private Instant startAt;
     private Instant endAt;
     private Instant completedAt;
+    private String signedPdfUrl;
 }
