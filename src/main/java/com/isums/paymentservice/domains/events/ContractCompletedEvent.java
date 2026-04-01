@@ -18,6 +18,7 @@ public class ContractCompletedEvent {
     private String tenantEmail;
     private UUID houseId;
     private UUID landlordId;
+    private Boolean isNewAccount;
     private Long depositAmount;
     private Long rentAmount;
     private Integer payDate;

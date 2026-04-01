@@ -13,11 +13,11 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "rental_invoices", indexes = {
-        @Index(name = "idx_invoice_tenant",   columnList = "tenant_id,status"),
-        @Index(name = "idx_invoice_house",    columnList = "house_id"),
+        @Index(name = "idx_invoice_tenant", columnList = "tenant_id,status"),
+        @Index(name = "idx_invoice_house", columnList = "house_id"),
         @Index(name = "idx_invoice_contract", columnList = "contract_id,type"),
-        @Index(name = "idx_invoice_due",      columnList = "due_date,status"),
-        @Index(name = "idx_invoice_period",   columnList = "contract_id,period_key", unique = true)
+        @Index(name = "idx_invoice_due", columnList = "due_date,status"),
+        @Index(name = "idx_invoice_period", columnList = "contract_id,period_key", unique = true)
 })
 @Data
 @NoArgsConstructor
@@ -25,7 +25,9 @@ import java.util.UUID;
 @Builder
 public class RentalInvoice {
 
-    @Id @GeneratedValue @UuidGenerator
+    @Id
+    @GeneratedValue
+    @UuidGenerator
     private UUID id;
 
     @Column(name = "contract_id")
@@ -62,6 +64,21 @@ public class RentalInvoice {
 
     @Column(name = "due_date", nullable = false)
     private Instant dueDate;
+
+    @Column(name = "rent_amount")
+    private Long rentAmount;
+
+    @Column(name = "pay_date")
+    private Integer payDate;
+
+    @Column(name = "contract_start_at")
+    private Instant contractStartAt;
+
+    @Column(name = "tenant_email", length = 320)
+    private String tenantEmail;
+
+    @Column(name = "is_new_account")
+    private Boolean isNewAccount;
 
     @Column(name = "paid_at")
     private Instant paidAt;

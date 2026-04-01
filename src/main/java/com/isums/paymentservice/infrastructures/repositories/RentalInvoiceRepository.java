@@ -20,4 +20,7 @@ public interface RentalInvoiceRepository extends JpaRepository<RentalInvoice, UU
     Optional<RentalInvoice> findFirstByHouseIdAndTenantIdAndStatus(UUID houseId, UUID tenantId, InvoiceStatus status);
 
     List<RentalInvoice> findByTenantIdAndHouseIdOrderByDueDateAsc(UUID tenantId, UUID houseId);
+
+    Optional<RentalInvoice> findByContractIdAndType(UUID contractId, InvoiceType type);
+
 }
