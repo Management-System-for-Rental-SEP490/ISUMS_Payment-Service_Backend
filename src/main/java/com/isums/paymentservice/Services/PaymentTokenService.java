@@ -31,7 +31,7 @@ public class PaymentTokenService {
         return token;
     }
 
-    public UUID validateToken(String token, UUID invoiceId) {
+    public void validateToken(String token, UUID invoiceId) {
         if (token == null || token.isBlank())
             throw new IllegalArgumentException("Token thanh toán không được để trống.");
 
@@ -49,7 +49,6 @@ public class PaymentTokenService {
         if (!tokenInvoiceId.equals(invoiceId))
             throw new IllegalArgumentException("Token không khớp với hóa đơn.");
 
-        return tenantId;
     }
 
     public void refreshTtl(String token) {

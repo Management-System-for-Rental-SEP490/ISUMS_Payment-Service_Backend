@@ -4,6 +4,8 @@ import com.isums.paymentservice.domains.entities.RentalInvoice;
 import com.isums.paymentservice.domains.enums.InvoiceStatus;
 import com.isums.paymentservice.domains.enums.InvoiceType;
 import com.isums.paymentservice.domains.events.ContractCompletedEvent;
+import com.isums.paymentservice.domains.events.DepositPaidEvent;
+import com.isums.paymentservice.domains.events.MapUserToHouseEvent;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
@@ -70,25 +72,11 @@ public class ContractEventListener {
                         .totalAmount(event.getDepositAmount())
                         .status(InvoiceStatus.UNPAID)
                         .dueDate(Instant.now().plusSeconds(3 * 24 * 3600))
-                        .build());
-            }
-
-            if (event.getRentAmount() != null && event.getRentAmount() > 0) {
-                Instant firstDue = calcFirstRentDue(event.getStartAt(), event.getPayDate());
-                String periodKey = "RENT_" + firstDue.atZone(VN).format(DateTimeFormatter.ofPattern("yyyyMM"));
-
-                invoices.add(RentalInvoice.builder()
-                        .contractId(event.getContractId())
-                        .tenantId(event.getContractId())
-                        .houseId(event.getContractId())
-                        .type(InvoiceType.MONTHLY_RENT)
-                        .periodKey(periodKey)
-                        .baseAmount(event.getRentAmount())
-                        .serviceAmount(0L)
-                        .penaltyAmount(0L)
-                        .totalAmount(event.getRentAmount())
-                        .status(InvoiceStatus.UNPAID)
-                        .dueDate(firstDue)
+                        .rentAmount(event.getRentAmount())
+                        .payDate(event.getPayDate())
+                        .contractStartAt(event.getStartAt())
+                        .tenantEmail(event.getTenantEmail())
+                        .isNewAccount(event.getIsNewAccount())
                         .build());
             }
 
@@ -96,7 +84,7 @@ public class ContractEventListener {
             log.info("[Payment] Created {} invoices contractId={}", invoices.size(), event.getContractId());
 
             if (event.getTenantEmail() != null && !event.getTenantEmail().isBlank()) {
-                sendPaymentEmails(invoices, event);
+                sendPaymentEmail(invoices, event);
             } else {
                 log.warn("[Payment] tenantEmail null — skip email notification contractId={}", event.getContractId());
             }
@@ -112,11 +100,80 @@ public class ContractEventListener {
         }
     }
 
-    private void sendPaymentEmails(List<RentalInvoice> invoices, ContractCompletedEvent event) {
+    @KafkaListener(topics = "deposit-paid-topic", groupId = "payment-group")
+    public void handleDepositPaid(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        try {
+            DepositPaidEvent event = objectMapper.readValue(record.value(), DepositPaidEvent.class);
+
+            // Lấy context từ DEPOSIT invoice đã lưu
+            RentalInvoice depositInvoice = invoiceRepository
+                    .findByContractIdAndType(event.contractId(), InvoiceType.DEPOSIT)
+                    .orElse(null);
+
+            if (depositInvoice == null || depositInvoice.getRentAmount() == null) {
+                log.warn("[Payment] No deposit invoice context contractId={}, skip", event.contractId());
+                ack.acknowledge();
+                return;
+            }
+
+            Instant firstRentDue = calcFirstRentDue(depositInvoice.getContractStartAt(), depositInvoice.getPayDate());
+            String periodKey = "RENT_" + firstRentDue.atZone(VN).format(DateTimeFormatter.ofPattern("yyyyMM"));
+
+            if (invoiceRepository.existsByContractIdAndPeriodKey(event.contractId(), periodKey)) {
+                log.warn("[Payment] MONTHLY_RENT already exists contractId={}, skip", event.contractId());
+                ack.acknowledge();
+                return;
+            }
+
+            RentalInvoice monthlyInvoice = RentalInvoice.builder()
+                    .contractId(event.contractId())
+                    .tenantId(event.tenantId())
+                    .houseId(event.houseId())
+                    .type(InvoiceType.MONTHLY_RENT)
+                    .periodKey(periodKey)
+                    .baseAmount(depositInvoice.getRentAmount())
+                    .serviceAmount(0L)
+                    .penaltyAmount(0L)
+                    .totalAmount(depositInvoice.getRentAmount())
+                    .status(InvoiceStatus.UNPAID)
+                    .dueDate(firstRentDue)
+                    .build();
+            invoiceRepository.save(monthlyInvoice);
+
+            String token = paymentTokenService.generateToken(monthlyInvoice.getId(), event.tenantId());
+            String paymentUrl = outsystemPaymentUrl + "?invoiceId=" + monthlyInvoice.getId() + "&token=" + token;
+
+            kafka.send("deposit-paid-topic-v2", DepositPaidEvent.builder()
+                    .contractId(event.contractId())
+                    .tenantId(event.tenantId())
+                    .isNewAccount(depositInvoice.getIsNewAccount())
+                    .firstRentPaymentUrl(paymentUrl)
+                    .firstRentAmount(depositInvoice.getRentAmount())
+                    .firstRentDueDate(firstRentDue)
+                    .build());
+
+            kafka.send("map-user-to-house-topic", MapUserToHouseEvent.builder()
+                    .userId(event.tenantId())
+                    .houseId(event.houseId())
+                    .build());
+
+            log.info("[Payment] MONTHLY_RENT created contractId={}", event.contractId());
+            ack.acknowledge();
+
+        } catch (JacksonException e) {
+            log.error("[Payment] Deserialize deposit-paid failed: {}", e.getMessage());
+            ack.acknowledge();
+        } catch (Exception e) {
+            log.error("[Payment] handleDepositPaid failed, will retry: {}", e.getMessage(), e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void sendPaymentEmail(List<RentalInvoice> invoices, ContractCompletedEvent event) {
         for (RentalInvoice invoice : invoices) {
             try {
                 String token = paymentTokenService.generateToken(invoice.getId(), event.getTenantId());
-                String paymentUrl = outsystemPaymentUrl + "?invoiceId=" + invoice.getId();
+                String paymentUrl = outsystemPaymentUrl + "?invoiceId=" + invoice.getId() + "&token=" + token;
 
                 Map<String, Object> params = new HashMap<>();
                 params.put("invoiceType", invoice.getType() == InvoiceType.DEPOSIT ? "Tiền cọc" : "Tiền thuê tháng đầu");
@@ -158,7 +215,7 @@ public class ContractEventListener {
 
     private String formatVnd(Long amount) {
         if (amount == null) return "0 ₫";
-        return NumberFormat.getNumberInstance(new Locale("vi", "VN"))
+        return NumberFormat.getNumberInstance(Locale.of("vi", "VN"))
                 .format(amount) + " ₫";
     }
 }

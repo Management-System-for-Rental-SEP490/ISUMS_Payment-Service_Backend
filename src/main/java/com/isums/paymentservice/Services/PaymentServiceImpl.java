@@ -24,13 +24,13 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.text.NumberFormat;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.Map;
-import java.util.TreeMap;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -56,71 +56,75 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public String createPaymentVNPayLink(CreatePaymentRequest request, HttpServletRequest httpRequest) {
 
-        UUID invoiceId = UUID.fromString(request.invoiceId());
+        // ── 1. Load & validate tất cả invoices ──────────────────────────────
+        List<UUID> invoiceUuids = request.invoiceIds().stream()
+                .map(UUID::fromString)
+                .toList();
 
-        RentalInvoice invoice = invoiceRepository.findById(invoiceId)
-                .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + invoiceId));
+        List<RentalInvoice> invoices = invoiceUuids.stream()
+                .map(id -> invoiceRepository.findById(id)
+                        .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + id)))
+                .toList();
 
-        if (invoice.getStatus() != InvoiceStatus.UNPAID) {
-            throw new IllegalStateException("Invoice không ở trạng thái UNPAID. Trạng thái hiện tại: " + invoice.getStatus());
+        for (RentalInvoice inv : invoices) {
+            if (inv.getStatus() != InvoiceStatus.UNPAID) {
+                throw new IllegalStateException(
+                        "Invoice " + inv.getId() + " không ở trạng thái UNPAID. Hiện tại: " + inv.getStatus());
+            }
         }
 
-        boolean hasPending = paymentRepository.existsByReferenceIdAndStatus(invoiceId, PaymentStatus.PENDING);
-        if (hasPending) {
-            Payment existing = paymentRepository
-                    .findByReferenceIdAndStatus(invoiceId, PaymentStatus.PENDING).orElseThrow();
-            log.info("[VNPay] Reusing PENDING payment={} invoice={}", existing.getId(), invoiceId);
-            return buildVnpayUrl(existing, invoice, request, extractIp(httpRequest));
-        }
+        long totalAmount = invoices.stream()
+                .mapToLong(RentalInvoice::getTotalAmount)
+                .sum();
+
+        UUID tenantId = invoices.getFirst().getTenantId();
+        String invoiceIdsJson = invoiceUuids.stream()
+                .map(UUID::toString)
+                .collect(Collectors.joining(",", "[\"", "\"]"))
+                .replace(",", "\",\"");
 
         Payment payment = Payment.builder()
-                .referenceId(invoiceId)
-                .referenceType(ReferenceType.INVOICE)
-                .tenantId(invoice.getTenantId())
-                .payerUserId(invoice.getTenantId())
-                .amount(invoice.getTotalAmount())
+                .referenceId(invoiceUuids.getFirst())
+                .referenceType(invoiceUuids.size() > 1
+                        ? ReferenceType.MULTI_INVOICE
+                        : ReferenceType.INVOICE)
+                .invoiceIds(invoiceIdsJson)
+                .tenantId(tenantId)
+                .payerUserId(tenantId)
+                .amount(totalAmount)
                 .method(resolveMethod(request.bankCode()))
                 .status(PaymentStatus.PENDING)
-                .note(buildOrderInfo(invoice))
+                .note(invoices.size() == 1
+                        ? buildOrderInfo(invoices.getFirst())
+                        : "Thanh toan " + invoices.size() + " hoa don")
                 .build();
         paymentRepository.save(payment);
 
-        log.info("[VNPay] Created PENDING payment={} invoice={} type={} amount={}",
-                payment.getId(), invoiceId, invoice.getType(), invoice.getTotalAmount());
+        log.info("[VNPay] Created PENDING payment={} invoices={} totalAmount={}",
+                payment.getId(), invoiceIdsJson, totalAmount);
 
-        return buildVnpayUrl(payment, invoice, request, extractIp(httpRequest));
+        return buildVnpayUrl(payment, totalAmount, request, extractIp(httpRequest));
     }
 
     @Override
     @Transactional
     public VNPayIpnResponse handleIpn(VNPayIpnRequest ipn) {
-        log.info("[VNPay IPN] txnRef={} responseCode={} transactionStatus={}",
-                ipn.getVnp_TxnRef(), ipn.getVnp_ResponseCode(), ipn.getVnp_TransactionStatus());
         try {
             if (!isValidSignature(ipn)) {
-                log.warn("[VNPay IPN] Invalid signature txnRef={}", ipn.getVnp_TxnRef());
                 return VNPayIpnResponseFactory.from(VNPayIpnCode.INVALID_SIGNATURE);
             }
 
-            UUID invoiceId = UUID.fromString(ipn.getVnp_TxnRef());
-            Payment payment = paymentRepository.findByReferenceId(invoiceId).orElse(null);
+            // ← TxnRef giờ là paymentId
+            UUID paymentId = UUID.fromString(ipn.getVnp_TxnRef());
+            Payment payment = paymentRepository.findById(paymentId).orElse(null);
 
-            if (payment == null) {
-                log.warn("[VNPay IPN] Payment not found invoiceId={}", invoiceId);
-                return VNPayIpnResponseFactory.from(VNPayIpnCode.ORDER_NOT_FOUND);
-            }
-            if (payment.getStatus() != PaymentStatus.PENDING) {
-                log.info("[VNPay IPN] Already processed payment={} status={}",
-                        payment.getId(), payment.getStatus());
+            if (payment == null) return VNPayIpnResponseFactory.from(VNPayIpnCode.ORDER_NOT_FOUND);
+            if (payment.getStatus() != PaymentStatus.PENDING)
                 return VNPayIpnResponseFactory.from(VNPayIpnCode.ALREADY_PROCESSED);
-            }
 
             long expectedAmount = payment.getAmount() * 100L;
-            if (expectedAmount != ipn.getVnp_Amount()) {
-                log.warn("[VNPay IPN] Amount mismatch expected={} got={}",
-                        expectedAmount, ipn.getVnp_Amount());
+            if (expectedAmount != ipn.getVnp_Amount())
                 return VNPayIpnResponseFactory.from(VNPayIpnCode.INVALID_AMOUNT);
-            }
 
             boolean isSuccess = "00".equals(ipn.getVnp_ResponseCode())
                     && "00".equals(ipn.getVnp_TransactionStatus());
@@ -132,20 +136,20 @@ public class PaymentServiceImpl implements PaymentService {
             if (isSuccess) payment.setPaidAt(now);
             paymentRepository.save(payment);
 
-            invoiceRepository.findById(invoiceId).ifPresent(invoice -> {
-                invoice.setStatus(isSuccess ? InvoiceStatus.PAID : InvoiceStatus.OVERDUE);
-                if (isSuccess) {
-                    invoice.setPaidAt(now);
-                    invoiceRepository.save(invoice);
+            List<UUID> invoiceIds = parseInvoiceIds(payment.getInvoiceIds());
+            for (UUID invoiceId : invoiceIds) {
+                invoiceRepository.findById(invoiceId).ifPresent(invoice -> {
+                    invoice.setStatus(isSuccess ? InvoiceStatus.PAID : InvoiceStatus.OVERDUE);
+                    if (isSuccess) {
+                        invoice.setPaidAt(now);
+                        invoiceRepository.save(invoice);
+                        handlePostPayment(invoice, ipn.getVnp_TransactionNo());
+                    } else {
+                        invoiceRepository.save(invoice);
+                    }
+                });
+            }
 
-                    // Sau khi PAID → gửi invoice receipt email + xử lý hậu payment
-                    handlePostPayment(invoice, ipn.getVnp_TransactionNo());
-                } else {
-                    invoiceRepository.save(invoice);
-                }
-            });
-
-            log.info("[VNPay IPN] payment={} updated to status={}", payment.getId(), payment.getStatus());
             return VNPayIpnResponseFactory.from(VNPayIpnCode.SUCCESS);
 
         } catch (Exception e) {
@@ -201,8 +205,20 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public String createPaymentVNPayLinkOutsystem(UUID invoiceId, String bankCode, String locale, HttpServletRequest httpRequest) {
         CreatePaymentRequest request = new CreatePaymentRequest(
-                invoiceId.toString(), bankCode, locale);
+                List.of(invoiceId.toString()), // ← wrap vào List
+                bankCode,
+                locale
+        );
         return createPaymentVNPayLink(request, httpRequest);
+    }
+
+    private List<UUID> parseInvoiceIds(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        return Arrays.stream(json.replaceAll("[\\[\\]\"]", "").split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .map(UUID::fromString)
+                .toList();
     }
 
 
@@ -237,39 +253,34 @@ public class PaymentServiceImpl implements PaymentService {
 
     private String formatVnd(Long amount) {
         if (amount == null) return "0 ₫";
-        return java.text.NumberFormat.getNumberInstance(new java.util.Locale("vi", "VN"))
-                .format(amount) + " ₫";
+        return NumberFormat.getNumberInstance(Locale.of("vi", "VN")).format(amount) + " ₫";
     }
 
-    private String buildVnpayUrl(Payment payment, RentalInvoice invoice,
+    private String buildVnpayUrl(Payment payment, long totalAmount,
                                  CreatePaymentRequest request, String ipAddr) {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime expire = now.plusMinutes(vnPayProperties.getExpireMinutes());
 
         Map<String, String> params = new TreeMap<>();
-        params.put("vnp_Version",    vnPayProperties.getVersion());
-        params.put("vnp_Command",    vnPayProperties.getCommand());
-        params.put("vnp_TmnCode",    vnPayProperties.getTmnCode());
-        params.put("vnp_Amount",     String.valueOf(invoice.getTotalAmount() * 100L));
+        params.put("vnp_Version", vnPayProperties.getVersion());
+        params.put("vnp_Command", vnPayProperties.getCommand());
+        params.put("vnp_TmnCode", vnPayProperties.getTmnCode());
+        params.put("vnp_Amount", String.valueOf(totalAmount * 100L));
         params.put("vnp_CreateDate", now.format(VNPAY_DATE_FORMAT));
-        params.put("vnp_CurrCode",   vnPayProperties.getCurrCode());
-        params.put("vnp_IpAddr",     ipAddr != null ? ipAddr : "127.0.0.1");
-        params.put("vnp_Locale",     request.localeOrDefault());
-        params.put("vnp_OrderInfo",  payment.getNote() != null ? payment.getNote() : buildOrderInfo(invoice));
-        params.put("vnp_OrderType",  vnPayProperties.getOrderType());
-        params.put("vnp_ReturnUrl",  vnPayProperties.getReturnUrl());
+        params.put("vnp_CurrCode", vnPayProperties.getCurrCode());
+        params.put("vnp_IpAddr", ipAddr != null ? ipAddr : "127.0.0.1");
+        params.put("vnp_Locale", request.localeOrDefault());
+        params.put("vnp_OrderInfo", payment.getNote());
+        params.put("vnp_OrderType", vnPayProperties.getOrderType());
+        params.put("vnp_ReturnUrl", vnPayProperties.getReturnUrl());
         params.put("vnp_ExpireDate", expire.format(VNPAY_DATE_FORMAT));
-        params.put("vnp_TxnRef",     invoice.getId().toString());
+        params.put("vnp_TxnRef", payment.getId().toString()); // ← dùng paymentId
 
         if (request.bankCode() != null && !request.bankCode().isBlank())
             params.put("vnp_BankCode", request.bankCode());
 
-        params.forEach((k, v) -> {
-            if (v == null) log.error("[VNPay] NULL param key={}", k);
-        });
-
         String queryString = buildQueryString(params);
-        String secureHash  = hmacSHA512(vnPayProperties.getHashSecret(), queryString);
+        String secureHash = hmacSHA512(vnPayProperties.getHashSecret(), queryString);
         return vnPayProperties.getPayUrl() + "?" + queryString + "&vnp_SecureHash=" + secureHash;
     }
 

@@ -18,4 +18,9 @@ public interface RentalInvoiceRepository extends JpaRepository<RentalInvoice, UU
     boolean existsByHouseIdAndTenantIdAndTypeAndStatus(UUID houseId, UUID tenantId, InvoiceType type, InvoiceStatus status);
 
     Optional<RentalInvoice> findFirstByHouseIdAndTenantIdAndStatus(UUID houseId, UUID tenantId, InvoiceStatus status);
+
+    List<RentalInvoice> findByTenantIdAndHouseIdOrderByDueDateAsc(UUID tenantId, UUID houseId);
+
+    Optional<RentalInvoice> findByContractIdAndType(UUID contractId, InvoiceType type);
+
 }

@@ -53,6 +53,9 @@ public class Payment {
     @Column(name = "method", nullable = false)
     private PaymentMethod method;
 
+    @Column(name = "invoice_ids", columnDefinition = "TEXT")
+    private String invoiceIds;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     private PaymentStatus status;

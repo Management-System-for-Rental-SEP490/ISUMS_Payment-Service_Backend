@@ -6,12 +6,10 @@ import com.isums.paymentservice.infrastructures.Abtracts.PaymentService;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -35,11 +33,15 @@ public class PaymentController {
     )
     @GetMapping("/invoices")
 //    @PreAuthorize("hasRole('TENANT')")
-    public ApiResponse<List<RentalInvoice>> getMyInvoices(@AuthenticationPrincipal Jwt jwt) {
+    public ApiResponse<List<RentalInvoice>> getMyInvoices(@AuthenticationPrincipal Jwt jwt, @RequestParam(required = false) UUID houseId) {
+
         UUID tenantId = UUID.fromString(jwt.getSubject());
-        return ApiResponses.ok(
-                invoiceRepository.findByTenantIdOrderByDueDateAsc(tenantId),
-                "Success");
+
+        List<RentalInvoice> invoices = houseId != null
+                ? invoiceRepository.findByTenantIdAndHouseIdOrderByDueDateAsc(tenantId, houseId)
+                : invoiceRepository.findByTenantIdOrderByDueDateAsc(tenantId);
+
+        return ApiResponses.ok(invoices, "Success");
     }
 
     @Operation(summary = "Tạo link thanh toán VNPay (tenant đã login)")
@@ -77,9 +79,7 @@ public class PaymentController {
 
         paymentTokenService.validateToken(token, invoiceId);
 
-        return ApiResponses.ok(
-                paymentService.createPaymentVNPayLinkOutsystem(
-                        invoiceId,
+        return ApiResponses.ok(paymentService.createPaymentVNPayLinkOutsystem(invoiceId,
                         request != null ? request.bankCode() : null,
                         request != null ? request.locale() : null,
                         httpRequest),
