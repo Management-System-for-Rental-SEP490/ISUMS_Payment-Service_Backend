@@ -180,6 +180,7 @@ public class ContractEventListener {
             kafka.send("map-user-to-house-topic", MapUserToHouseEvent.builder()
                     .userId(event.tenantId())
                     .houseId(event.houseId())
+                    .handoverDate(depositInvoice.getContractStartAt())
                     .build());
 
             log.info("[Payment] MONTHLY_RENT created + enriched event sent contractId={}",

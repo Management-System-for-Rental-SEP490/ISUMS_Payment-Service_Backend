@@ -7,6 +7,7 @@ import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceReposi
 import com.isums.paymentservice.services.PaymentTokenService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Nullable;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -29,17 +30,15 @@ public class PaymentController {
 
     @Operation(
             summary = "Lấy danh sách hóa đơn của tenant",
-            description = "Trả về tất cả hóa đơn của tenant hiện tại theo thứ tự dueDate tăng dần."
+            description = "Trả về tất cả hóa đơn của tenant hiện tại theo thứ tự ngày tăng dần."
     )
     @GetMapping("/invoices")
 //    @PreAuthorize("hasRole('TENANT')")
-    public ApiResponse<List<RentalInvoice>> getMyInvoices(@AuthenticationPrincipal Jwt jwt, @RequestParam(required = false) UUID houseId) {
+    public ApiResponse<List<InvoiceDto>> getMyInvoices(@AuthenticationPrincipal Jwt jwt, @RequestParam(required = false) UUID houseId) {
 
-        UUID tenantId = UUID.fromString(jwt.getSubject());
+        String keycloakId = jwt.getSubject();
 
-        List<RentalInvoice> invoices = houseId != null
-                ? invoiceRepository.findByTenantIdAndHouseIdOrderByDueDateAsc(tenantId, houseId)
-                : invoiceRepository.findByTenantIdOrderByDueDateAsc(tenantId);
+        var invoices = paymentService.getMyInvoices(keycloakId, houseId);
 
         return ApiResponses.ok(invoices, "Success");
     }

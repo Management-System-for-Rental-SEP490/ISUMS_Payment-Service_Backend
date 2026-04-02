@@ -9,12 +9,15 @@ import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.domains.factories.VNPayIpnResponseFactory;
 import com.isums.paymentservice.infrastructures.Abtracts.PaymentService;
 import com.isums.paymentservice.infrastructures.grpcs.UserGrpcService;
+import com.isums.paymentservice.infrastructures.mappers.InvoiceMapper;
 import com.isums.paymentservice.infrastructures.repositories.PaymentRepository;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
+import com.isums.userservice.grpc.UserResponse;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -50,6 +53,8 @@ public class PaymentServiceImpl implements PaymentService {
     private String outsystemPaymentUrl;
 
     private final UserGrpcService userGrpcService;
+
+    private final InvoiceMapper invoiceMapper;
 
 
     @Override
@@ -188,8 +193,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional(readOnly = true)
     public PublicInvoiceDto getPublicInvoice(UUID invoiceId) {
-        RentalInvoice invoice = invoiceRepository.findById(invoiceId)
-                .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + invoiceId));
+        RentalInvoice invoice = invoiceRepository.findById(invoiceId).orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + invoiceId));
 
         return new PublicInvoiceDto(
                 invoice.getId(),
@@ -209,6 +213,19 @@ public class PaymentServiceImpl implements PaymentService {
                 locale
         );
         return createPaymentVNPayLink(request, httpRequest);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<InvoiceDto> getMyInvoices(String keycloakId, @Nullable UUID houseId) {
+        UserResponse user = userGrpcService.getUserIdAndRoleByKeyCloakId(keycloakId);
+        UUID userId = UUID.fromString(user.getId());
+
+        List<RentalInvoice> invoices = houseId != null
+                ? invoiceRepository.findByTenantIdAndHouseIdOrderByDueDateAsc(userId, houseId)
+                : invoiceRepository.findByTenantIdOrderByDueDateAsc(userId);
+
+        return invoiceMapper.toDtos(invoices);
     }
 
     private List<UUID> parseInvoiceIds(String json) {
