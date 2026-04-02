@@ -306,10 +306,10 @@ public class PaymentServiceImpl implements PaymentService {
         params.put("vnp_OrderType", vnPayProperties.getOrderType());
         params.put("vnp_ReturnUrl", vnPayProperties.getReturnUrl());
         params.put("vnp_ExpireDate", expire.format(VNPAY_DATE_FORMAT));
-        params.put("vnp_TxnRef", payment.getId().toString()); // ← dùng paymentId
+        params.put("vnp_TxnRef", payment.getId().toString());
 
         if (request.bankCode() != null && !request.bankCode().isBlank())
-            params.put("vnp_BankCode", request.bankCode());
+            params.put("vnp_BankCode", request.bankCodeOrDefault());
 
         String queryString = buildQueryString(params);
         String secureHash = hmacSHA512(vnPayProperties.getHashSecret(), queryString);
