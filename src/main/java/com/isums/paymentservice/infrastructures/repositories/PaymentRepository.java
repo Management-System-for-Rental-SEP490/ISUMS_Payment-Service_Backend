@@ -5,6 +5,7 @@ import com.isums.paymentservice.domains.enums.PaymentStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -18,4 +19,6 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     boolean existsByReferenceIdAndStatus(UUID referenceId, PaymentStatus status);
 
     Optional<Payment> findByReferenceIdAndStatus(UUID referenceId, PaymentStatus status);
+
+    List<Payment> findByReferenceIdOrderByCreatedAtDesc(UUID referenceId);
 }
