@@ -63,10 +63,10 @@ public class IssueEventListener {
 
         } catch (com.fasterxml.jackson.core.JacksonException e) {
             log.error("[Invoice] Deserialize failed raw={}: {}", record.value(), e.getMessage());
-            ack.acknowledge(); // poison pill — ack để không block partition
+            ack.acknowledge();
         } catch (Exception e) {
             log.error("[Invoice] handle failed: {}", e.getMessage(), e);
-            throw new RuntimeException(e); // không ack → Kafka retry
+            throw new RuntimeException(e);
         }
     }
 }
