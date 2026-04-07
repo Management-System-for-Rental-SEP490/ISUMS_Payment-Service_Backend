@@ -45,7 +45,7 @@ public class IssueEventListener {
                     .contractId(event.getQuoteId())
                     .tenantId(event.getTenantId())
                     .houseId(event.getHouseId())
-                    .type(InvoiceType.MAINTENANCE)
+                    .type(InvoiceType.ISSUE)
                     .periodKey(periodKey)
                     .baseAmount(totalAmount)
                     .serviceAmount(0L)
