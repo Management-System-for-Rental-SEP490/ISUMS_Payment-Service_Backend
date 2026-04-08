@@ -340,6 +340,17 @@ public class PaymentServiceImpl implements PaymentService {
 
     private void handlePostQuotePayment(Payment payment, String txnNo) {
         try {
+            String periodKey = "QUOTE-" + payment.getReferenceId();
+
+            invoiceRepository.findByContractIdAndPeriodKey(payment.getReferenceId(), periodKey)
+                    .ifPresent(invoice -> {
+                        invoice.setStatus(InvoiceStatus.PAID);
+                        invoice.setPaidAt(payment.getPaidAt());
+                        invoiceRepository.save(invoice);
+                        log.info("[Payment] Invoice PAID invoiceId={} quoteId={}",
+                                invoice.getId(), payment.getReferenceId());
+                    });
+
             kafka.send("quote-payment-completed", QuotePaymentCompletedEvent.builder()
                     .quoteId(payment.getReferenceId())
                     .issueId(null)
@@ -348,6 +359,7 @@ public class PaymentServiceImpl implements PaymentService {
                     .txnNo(txnNo)
                     .paidAt(payment.getPaidAt())
                     .build());
+
             log.info("[Payment] quote-payment-completed sent quoteId={}", payment.getReferenceId());
         } catch (Exception e) {
             log.error("[Payment] handlePostQuotePayment failed quoteId={}: {}",
