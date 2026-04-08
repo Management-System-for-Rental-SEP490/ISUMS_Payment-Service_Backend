@@ -22,4 +22,6 @@ public interface PaymentService {
     List<InvoiceDto> getMyInvoices(String keycloakId, UUID houseId);
 
     InvoiceDetailDto getInvoiceById(UUID invoiceId, String keycloakId);
+
+    void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req);
 }

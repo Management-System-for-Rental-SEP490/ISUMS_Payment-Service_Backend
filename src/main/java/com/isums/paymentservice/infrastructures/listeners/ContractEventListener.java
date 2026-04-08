@@ -3,10 +3,7 @@ package com.isums.paymentservice.infrastructures.listeners;
 import com.isums.paymentservice.domains.entities.RentalInvoice;
 import com.isums.paymentservice.domains.enums.InvoiceStatus;
 import com.isums.paymentservice.domains.enums.InvoiceType;
-import com.isums.paymentservice.domains.events.ContractCompletedEvent;
-import com.isums.paymentservice.domains.events.DepositPaidEvent;
-import com.isums.paymentservice.domains.events.MapUserToHouseEvent;
-import com.isums.paymentservice.domains.events.SendEmailEvent;
+import com.isums.paymentservice.domains.events.*;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +14,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -25,6 +23,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 @Slf4j
@@ -238,6 +237,60 @@ public class ContractEventListener {
         }
 
         return due.toInstant();
+    }
+
+    @KafkaListener(topics = "contract.deposit-refund.confirmed", groupId = "payment-group")
+    @Transactional
+    public void handleDepositRefundConfirmed(
+            ConsumerRecord<String, String> record, Acknowledgment ack) {
+        try {
+            DepositRefundConfirmedEvent event = objectMapper.readValue(record.value(), DepositRefundConfirmedEvent.class);
+
+            String periodKey = "DEPOSIT_REFUND";
+            if (invoiceRepository.existsByContractIdAndPeriodKey(event.getContractId(), periodKey)) {
+                log.warn("[Payment] DEPOSIT_REFUND already exists contractId={}, skip",
+                        event.getContractId());
+                ack.acknowledge();
+                return;
+            }
+
+            RentalInvoice refundInvoice = RentalInvoice.builder()
+                    .contractId(event.getContractId())
+                    .tenantId(event.getTenantId())
+                    .houseId(event.getHouseId())
+                    .type(InvoiceType.DEPOSIT_REFUND)
+                    .periodKey(periodKey)
+                    .baseAmount(event.getRefundAmount())
+                    .serviceAmount(0L)
+                    .penaltyAmount(0L)
+                    .totalAmount(event.getRefundAmount())
+                    .status(InvoiceStatus.UNPAID)
+                    .tenantEmail(event.getTenantEmail())
+                    .dueDate(Instant.now().plus(7, ChronoUnit.DAYS))
+                    .build();
+
+            invoiceRepository.save(refundInvoice);
+
+            // Notify tenant
+            kafka.send("notification-email", SendEmailEvent.builder()
+                    .to(event.getTenantEmail())
+                    .templateCode("deposit_refund_notify")
+                    .params(Map.of(
+                            "refundAmount", formatVnd(event.getRefundAmount()),
+                            "note", event.getNote() != null
+                                    ? event.getNote() : "Không có ghi chú",
+                            "dueDate", DMY.format(refundInvoice.getDueDate())
+                    ))
+                    .build());
+
+            log.info("[Payment] DEPOSIT_REFUND invoice created contractId={} amount={}",
+                    event.getContractId(), event.getRefundAmount());
+            ack.acknowledge();
+
+        } catch (Exception e) {
+            log.error("[Payment] handleDepositRefundConfirmed failed: {}", e.getMessage(), e);
+            throw new RuntimeException(e);
+        }
     }
 
     private String formatVnd(Long amount) {

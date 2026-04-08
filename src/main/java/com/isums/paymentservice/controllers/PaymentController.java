@@ -8,6 +8,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -114,5 +115,14 @@ public class PaymentController {
     public ApiResponse<Void> resendNotification(@PathVariable UUID invoiceId) {
         paymentService.resendPaymentNotification(invoiceId);
         return ApiResponses.ok(null, "Đã gửi lại thông báo thanh toán");
+    }
+
+    @PutMapping("/{invoiceId}/mark-refund-paid")
+    @PreAuthorize("hasAnyRole('LANDLORD', 'MANAGER')")
+    public ApiResponse<Void> markRefundPaid(
+            @PathVariable UUID invoiceId,
+            @RequestBody @Valid MarkRefundPaidRequest req) {
+        paymentService.markDepositRefundPaid(invoiceId, req);
+        return ApiResponses.ok(null, "Đã xác nhận hoàn cọc");
     }
 }
