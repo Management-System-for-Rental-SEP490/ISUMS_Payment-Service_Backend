@@ -1,9 +1,7 @@
 package com.isums.paymentservice.controllers;
 
 import com.isums.paymentservice.domains.dtos.*;
-import com.isums.paymentservice.domains.entities.RentalInvoice;
 import com.isums.paymentservice.infrastructures.Abtracts.PaymentService;
-import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -25,70 +23,57 @@ public class PaymentController {
 
     private final PaymentService paymentService;
     private final PaymentTokenService paymentTokenService;
-    private final RentalInvoiceRepository invoiceRepository;
 
     @Operation(
             summary = "Lấy danh sách hóa đơn của tenant",
-            description = "Trả về tất cả hóa đơn của tenant hiện tại theo thứ tự dueDate tăng dần."
+            description = "Trả về hóa đơn của tenant hiện tại theo thứ tự dueDate tăng dần. " +
+                    "Truyền houseId để lọc theo nhà cụ thể."
     )
     @GetMapping("/invoices")
-//    @PreAuthorize("hasRole('TENANT')")
-    public ApiResponse<List<RentalInvoice>> getMyInvoices(@AuthenticationPrincipal Jwt jwt, @RequestParam(required = false) UUID houseId) {
+    public ApiResponse<List<InvoiceDto>> getMyInvoices(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestParam(required = false) UUID houseId) {
 
-        UUID tenantId = UUID.fromString(jwt.getSubject());
-
-        List<RentalInvoice> invoices = houseId != null
-                ? invoiceRepository.findByTenantIdAndHouseIdOrderByDueDateAsc(tenantId, houseId)
-                : invoiceRepository.findByTenantIdOrderByDueDateAsc(tenantId);
-
-        return ApiResponses.ok(invoices, "Success");
-    }
-
-    @Operation(summary = "Tạo link thanh toán VNPay (tenant đã login)")
-    @PostMapping("/vnpay")
-//    @PreAuthorize("hasRole('TENANT')")
-    public ApiResponse<String> createPaymentLink(@AuthenticationPrincipal Jwt jwt, @RequestBody @Valid CreatePaymentRequest request, HttpServletRequest httpRequest) {
-        return ApiResponses.ok(paymentService.createPaymentVNPayLink(request, httpRequest), "Link thanh toán VNPay");
+        String keycloakId = jwt.getSubject();
+        return ApiResponses.ok(paymentService.getMyInvoices(keycloakId, houseId), "Success");
     }
 
     @Operation(
-            summary = "[OUTSYSTEM] Xem chi tiết hóa đơn",
-            description = """
-                    Tenant dùng link từ email để xem hóa đơn mà không cần đăng nhập.
-                    """
+            summary = "Xem chi tiết hóa đơn",
+            description = "Tenant chỉ xem được hóa đơn của chính mình. Trả về đầy đủ thông tin tenant, nhà, lịch sử thanh toán."
     )
-    @GetMapping("/outsystem/invoices/{invoiceId}")
-    public ApiResponse<PublicInvoiceDto> getInvoiceOutsystem(@PathVariable UUID invoiceId, @RequestParam String token) {
+    @GetMapping("/invoices/{invoiceId}")
+    public ApiResponse<InvoiceDetailDto> getInvoiceById(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID invoiceId) {
 
-        paymentTokenService.validateToken(token, invoiceId);
-        paymentTokenService.refreshTtl(token);
-        return ApiResponses.ok(paymentService.getPublicInvoice(invoiceId), "Success");
+        String keycloakId = jwt.getSubject();
+        return ApiResponses.ok(paymentService.getInvoiceById(invoiceId, keycloakId), "Success to get invoice detail");
     }
 
     @Operation(
-            summary = "[OUTSYSTEM] Tạo link thanh toán VNPay",
+            summary = "Tạo link thanh toán VNPay",
             description = """
-                    Tenant dùng link từ email để thanh toán mà không cần đăng nhập.
+                    Hỗ trợ 2 luồng:
+                    - **Invoice**: cung cấp `invoiceIds` (một hoặc nhiều hóa đơn tiền thuê/cọc).
+                    - **Quote**: cung cấp `quoteId` (báo giá sửa chữa đã được duyệt, ticket ở trạng thái WAITING_PAYMENT).
                     
-                    **Response:** VNPay payment URL để redirect tenant.
+                    Chỉ được cung cấp một trong hai, không cả hai.
                     """
     )
-    @PostMapping("/outsystem/vnpay")
-    public ApiResponse<String> createPaymentOutsystem(@RequestParam UUID invoiceId, @RequestParam String token, @RequestBody(required = false) CreatePaymentRequest request,
-                                                      HttpServletRequest httpRequest) {
+    @PostMapping("/vnpay")
+    public ApiResponse<String> createPaymentLink(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestBody @Valid CreatePaymentRequest request,
+            HttpServletRequest httpRequest) {
 
-        paymentTokenService.validateToken(token, invoiceId);
-
-        return ApiResponses.ok(paymentService.createPaymentVNPayLinkOutsystem(invoiceId,
-                        request != null ? request.bankCode() : null,
-                        request != null ? request.locale() : null,
-                        httpRequest),
-                "Link thanh toán VNPay");
+        String keycloakId = jwt.getSubject();
+        return ApiResponses.ok(paymentService.createPaymentVNPayLink(request, httpRequest, keycloakId), "Link thanh toán VNPay");
     }
 
     @Operation(
-            summary = "VNPay IPN callback",
-            description = "Endpoint VNPay gọi để thông báo kết quả thanh toán. Không gọi trực tiếp từ FE."
+            summary = "[VNPay] IPN callback",
+            description = "Endpoint VNPay gọi sau khi thanh toán. Không cần JWT."
     )
     @GetMapping("/vnpay/ipn")
     public VNPayIpnResponse handleIpn(VNPayIpnRequest ipn) {
@@ -96,27 +81,38 @@ public class PaymentController {
     }
 
     @Operation(
-            summary = "VNPay Return URL",
-            description = "VNPay redirect tenant về đây sau khi thanh toán. FE đọc query params để hiển thị kết quả."
+            summary = "[OUTSYSTEM] Xem chi tiết hóa đơn",
+            description = "Tenant dùng link từ email để xem hóa đơn mà không cần đăng nhập."
     )
-    @GetMapping("/vnpay/return")
-    public ApiResponse<String> handleReturn(VNPayIpnRequest ipn) {
-        boolean success = "00".equals(ipn.getVnp_ResponseCode());
-        return ApiResponses.ok(
-                success ? "PAYMENT_SUCCESS" : "PAYMENT_FAILED",
-                success ? "Thanh toán thành công" : "Thanh toán thất bại");
+    @GetMapping("/outsystem/invoices/{invoiceId}")
+    public ApiResponse<PublicInvoiceDto> getPublicInvoice(
+            @PathVariable UUID invoiceId,
+            @RequestParam String token) {
+
+        paymentTokenService.validateToken(token, invoiceId);
+        return ApiResponses.ok(paymentService.getPublicInvoice(invoiceId), "Success");
     }
 
+    @Operation(
+            summary = "[OUTSYSTEM] Tạo link thanh toán từ email",
+            description = "Tạo link VNPay từ email notification (không cần đăng nhập)."
+    )
+    @PostMapping("/outsystem/vnpay")
+    public ApiResponse<String> createPaymentLinkOutsystem(
+            @RequestParam UUID invoiceId,
+            @RequestParam(required = false) String bankCode,
+            @RequestParam(required = false) String locale,
+            HttpServletRequest httpRequest) {
+
+        return ApiResponses.ok(
+                paymentService.createPaymentVNPayLinkOutsystem(invoiceId, bankCode, locale, httpRequest),
+                "Link thanh toán VNPay");
+    }
+
+    @Operation(summary = "Gửi lại email thông báo thanh toán")
     @PostMapping("/invoices/{invoiceId}/resend")
-//    @PreAuthorize("hasAnyRole('LANDLORD','MANAGER')")
-    public ApiResponse<Void> resendPaymentNotification(@PathVariable UUID invoiceId) {
+    public ApiResponse<Void> resendNotification(@PathVariable UUID invoiceId) {
         paymentService.resendPaymentNotification(invoiceId);
         return ApiResponses.ok(null, "Đã gửi lại thông báo thanh toán");
-    }
-
-    private String getClientIp(HttpServletRequest request) {
-        String xff = request.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) return xff.split(",")[0].trim();
-        return request.getRemoteAddr();
     }
 }

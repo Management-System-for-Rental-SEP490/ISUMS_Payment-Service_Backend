@@ -1,0 +1,10 @@
+[33mbf304dc[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mdev[m[33m, [m[1;31morigin/dev[m[33m)[m Enhance payment request validation and VNPay parameter handling: add constraints for `invoiceIds` and default logic for `bankCode`.
+[33me025c9a[m Add InvoiceDto and InvoiceMapper, enhance PaymentService and controller with tenant invoice retrieval functionality, and update dependencies for MapStruct integration.
+[33m064cc12[m Enhance ContractEventListener with email notifications, improve deposit and invoice handling, and update Kafka topics for enriched events. Add `signedPdfUrl` to `ContractCompletedEvent`.
+[33m34de474[m Merge pull request #6 from Management-System-for-Rental-SEP490/rescue-missing-files
+[33m5edbaf4[m[33m ([m[1;31morigin/rescue-missing-files[m[33m, [m[1;32mrescue-missing-files[m[33m)[m Add rental invoice enhancements, deposit handling improvements, and new events for user-house mapping and payment processing
+[33m4f52f4b[m Support multi-invoice payments: update VNPay link creation logic, add invoice ID list handling, and adjust repository methods and payment entity structure
+[33mb55ed58[m Refactor Payment Service: simplify method responses, adjust token validation logic, and streamline request creation methods
+[33mde45bea[m[33m ([m[1;32mfeature/create-payment[m[33m)[m Merge pull request #4 from Management-System-for-Rental-SEP490/rescue-missing-files
+[33mbe2aa64[m Remove `application.properties` file containing sensitive
+[33me78b297[m Merge pull request #3 from Management-System-for-Rental-SEP490/rescue-missing-files

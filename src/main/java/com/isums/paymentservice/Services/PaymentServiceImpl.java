@@ -5,23 +5,31 @@ import com.isums.paymentservice.domains.entities.Payment;
 import com.isums.paymentservice.domains.entities.RentalInvoice;
 import com.isums.paymentservice.domains.enums.*;
 import com.isums.paymentservice.domains.events.DepositPaidEvent;
+import com.isums.paymentservice.domains.events.QuotePaymentCompletedEvent;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.domains.factories.VNPayIpnResponseFactory;
 import com.isums.paymentservice.infrastructures.Abtracts.PaymentService;
+import com.isums.paymentservice.infrastructures.grpcs.IssueGrpcClient;
+import com.isums.paymentservice.infrastructures.grpcs.HouseGrpcClient;
 import com.isums.paymentservice.infrastructures.grpcs.UserGrpcService;
+import com.isums.paymentservice.infrastructures.mappers.InvoiceMapper;
 import com.isums.paymentservice.infrastructures.repositories.PaymentRepository;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
+import com.isums.userservice.grpc.UserResponse;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.math.BigDecimal;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
@@ -41,69 +49,28 @@ public class PaymentServiceImpl implements PaymentService {
     private final RentalInvoiceRepository invoiceRepository;
     private final VNPayProperties vnPayProperties;
     private final KafkaTemplate<String, Object> kafka;
+    private final com.isums.paymentservice.services.PaymentTokenService paymentTokenService;
+    private final UserGrpcService userGrpcService;
+    private final InvoiceMapper invoiceMapper;
+    private final IssueGrpcClient issueGrpcClient;
+    private final HouseGrpcClient houseGrpcClient;
 
     private static final DateTimeFormatter VNPAY_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
-    private static final DateTimeFormatter DMY = DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
-    private final com.isums.paymentservice.services.PaymentTokenService paymentTokenService;
+    private static final DateTimeFormatter DMY = DateTimeFormatter.ofPattern("dd/MM/yyyy")
+            .withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
 
     @Value("${app.payment.outsystem-url:https://outsystem.isums.pro/payments}")
     private String outsystemPaymentUrl;
 
-    private final UserGrpcService userGrpcService;
-
 
     @Override
     @Transactional
-    public String createPaymentVNPayLink(CreatePaymentRequest request, HttpServletRequest httpRequest) {
-
-        // ── 1. Load & validate tất cả invoices ──────────────────────────────
-        List<UUID> invoiceUuids = request.invoiceIds().stream()
-                .map(UUID::fromString)
-                .toList();
-
-        List<RentalInvoice> invoices = invoiceUuids.stream()
-                .map(id -> invoiceRepository.findById(id)
-                        .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + id)))
-                .toList();
-
-        for (RentalInvoice inv : invoices) {
-            if (inv.getStatus() != InvoiceStatus.UNPAID) {
-                throw new IllegalStateException(
-                        "Invoice " + inv.getId() + " không ở trạng thái UNPAID. Hiện tại: " + inv.getStatus());
-            }
+    public String createPaymentVNPayLink(CreatePaymentRequest request, HttpServletRequest httpRequest, String keycloakId) {
+        UUID callerId = resolveInternalTenantId(keycloakId);
+        if (request.isQuotePayment()) {
+            return createQuotePaymentLink(request, httpRequest, callerId);
         }
-
-        long totalAmount = invoices.stream()
-                .mapToLong(RentalInvoice::getTotalAmount)
-                .sum();
-
-        UUID tenantId = invoices.getFirst().getTenantId();
-        String invoiceIdsJson = invoiceUuids.stream()
-                .map(UUID::toString)
-                .collect(Collectors.joining(",", "[\"", "\"]"))
-                .replace(",", "\",\"");
-
-        Payment payment = Payment.builder()
-                .referenceId(invoiceUuids.getFirst())
-                .referenceType(invoiceUuids.size() > 1
-                        ? ReferenceType.MULTI_INVOICE
-                        : ReferenceType.INVOICE)
-                .invoiceIds(invoiceIdsJson)
-                .tenantId(tenantId)
-                .payerUserId(tenantId)
-                .amount(totalAmount)
-                .method(resolveMethod(request.bankCode()))
-                .status(PaymentStatus.PENDING)
-                .note(invoices.size() == 1
-                        ? buildOrderInfo(invoices.getFirst())
-                        : "Thanh toan " + invoices.size() + " hoa don")
-                .build();
-        paymentRepository.save(payment);
-
-        log.info("[VNPay] Created PENDING payment={} invoices={} totalAmount={}",
-                payment.getId(), invoiceIdsJson, totalAmount);
-
-        return buildVnpayUrl(payment, totalAmount, request, extractIp(httpRequest));
+        return createInvoicePaymentLink(request, httpRequest, callerId);
     }
 
     @Override
@@ -135,18 +102,12 @@ public class PaymentServiceImpl implements PaymentService {
             if (isSuccess) payment.setPaidAt(now);
             paymentRepository.save(payment);
 
-            List<UUID> invoiceIds = parseInvoiceIds(payment.getInvoiceIds());
-            for (UUID invoiceId : invoiceIds) {
-                invoiceRepository.findById(invoiceId).ifPresent(invoice -> {
-                    invoice.setStatus(isSuccess ? InvoiceStatus.PAID : InvoiceStatus.OVERDUE);
-                    if (isSuccess) {
-                        invoice.setPaidAt(now);
-                        invoiceRepository.save(invoice);
-                        handlePostPayment(invoice, ipn.getVnp_TransactionNo());
-                    } else {
-                        invoiceRepository.save(invoice);
-                    }
-                });
+            if (isSuccess) {
+                if (payment.getReferenceType() == ReferenceType.QUOTE) {
+                    handlePostQuotePayment(payment, ipn.getVnp_TransactionNo());
+                } else {
+                    handlePostInvoicePayments(payment, ipn.getVnp_TransactionNo(), now);
+                }
             }
 
             return VNPayIpnResponseFactory.from(VNPayIpnCode.SUCCESS);
@@ -163,15 +124,15 @@ public class PaymentServiceImpl implements PaymentService {
                 .orElseThrow(() -> new EntityNotFoundException("Invoice not found"));
 
         if (invoice.getStatus() == InvoiceStatus.PAID) {
-            throw new IllegalStateException("Invoice đã thanh toán rồi.");
+            throw new IllegalStateException("The invoice has already been paid.");
         }
 
         String token = paymentTokenService.generateToken(invoice.getId(), invoice.getTenantId());
         String paymentUrl = outsystemPaymentUrl + "?invoiceId=" + invoice.getId() + "&token=" + token;
 
-        String getTenantEmail = userGrpcService.getTenantEmail(invoice.getTenantId());
+        String tenantEmail = userGrpcService.getTenantEmail(invoice.getTenantId());
         kafka.send("notification-email", SendEmailEvent.builder()
-                .to(getTenantEmail)
+                .to(tenantEmail)
                 .templateCode("PAYMENT_INVOICE")
                 .params(Map.of(
                         "invoiceType", translateType(invoice.getType().name()),
@@ -202,24 +163,209 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public String createPaymentVNPayLinkOutsystem(UUID invoiceId, String bankCode, String locale, HttpServletRequest httpRequest) {
+    public String createPaymentVNPayLinkOutsystem(UUID invoiceId, String bankCode,
+                                                  String locale, HttpServletRequest httpRequest) {
+        RentalInvoice inv = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + invoiceId));
         CreatePaymentRequest request = new CreatePaymentRequest(
-                List.of(invoiceId.toString()),
-                bankCode,
-                locale
-        );
-        return createPaymentVNPayLink(request, httpRequest);
+                List.of(invoiceId.toString()), null, bankCode, locale);
+        return createInvoicePaymentLink(request, httpRequest, inv.getTenantId());
     }
 
-    private List<UUID> parseInvoiceIds(String json) {
-        if (json == null || json.isBlank()) return List.of();
-        return Arrays.stream(json.replaceAll("[\\[\\]\"]", "").split(","))
-                .map(String::trim)
-                .filter(s -> !s.isBlank())
+    @Override
+    @Transactional(readOnly = true)
+    public List<InvoiceDto> getMyInvoices(String keycloakId, @Nullable UUID houseId) {
+        UUID tenantId = resolveInternalTenantId(keycloakId);
+        List<RentalInvoice> invoices = houseId != null
+                ? invoiceRepository.findByTenantIdAndHouseIdOrderByDueDateAsc(tenantId, houseId)
+                : invoiceRepository.findByTenantIdOrderByDueDateAsc(tenantId);
+        return invoiceMapper.toDtos(invoices);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public InvoiceDetailDto getInvoiceById(UUID invoiceId, String keycloakId) {
+
+        RentalInvoice invoice = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + invoiceId));
+
+        String tenantName = null, tenantPhone = null;
+        UUID tenantId = null;
+        try {
+            UserResponse user = userGrpcService.getUserIdAndRoleByKeyCloakId(keycloakId);
+            tenantId = UUID.fromString(user.getId());
+            if (!invoice.getTenantId().equals(tenantId)) {
+                throw new AccessDeniedException("Bạn không có quyền xem hóa đơn này.");
+            }
+            tenantName = user.getName();
+            tenantPhone = user.getPhoneNumber();
+        } catch (Exception e) {
+            log.warn("[Invoice] Cannot fetch tenant info tenantId={}: {}", tenantId, e.getMessage());
+        }
+
+        // House info
+        String houseName = null, houseAddress = null;
+        try {
+            var house = houseGrpcClient.getHouse(invoice.getHouseId());
+            if (house != null) {
+                houseName = house.getName();
+                houseAddress = house.getAddress();
+            }
+        } catch (Exception e) {
+            log.warn("[Invoice] Cannot fetch house info houseId={}: {}", invoice.getHouseId(), e.getMessage());
+        }
+
+        List<InvoiceDetailDto.PaymentRecord> payments = paymentRepository.findByReferenceIdOrderByCreatedAtDesc(invoiceId)
+                .stream()
+                .map(p -> new InvoiceDetailDto.PaymentRecord(
+                        p.getId(), p.getAmount(), p.getMethod(),
+                        p.getStatus(), p.getGatewayTxnId(),
+                        p.getPaidAt(), p.getCreatedAt()))
+                .toList();
+
+        return new InvoiceDetailDto(
+                invoice.getId(), invoice.getContractId(),
+                invoice.getType(), invoice.getPeriodKey(),
+                invoice.getBaseAmount(), invoice.getServiceAmount(),
+                invoice.getPenaltyAmount(), invoice.getTotalAmount(),
+                invoice.getStatus(), invoice.getDueDate(),
+                invoice.getPaidAt(), invoice.getCreatedAt(),
+                tenantId, tenantName, invoice.getTenantEmail(), tenantPhone,
+                invoice.getHouseId(), houseName, houseAddress,
+                payments
+        );
+    }
+
+    private String createInvoicePaymentLink(CreatePaymentRequest request,
+                                            HttpServletRequest httpRequest,
+                                            UUID callerId) {
+        List<UUID> invoiceUuids = request.invoiceIds().stream()
                 .map(UUID::fromString)
                 .toList();
+
+        List<RentalInvoice> invoices = invoiceUuids.stream()
+                .map(id -> invoiceRepository.findById(id)
+                        .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + id)))
+                .toList();
+
+        for (RentalInvoice inv : invoices) {
+            if (inv.getStatus() != InvoiceStatus.UNPAID) {
+                throw new IllegalStateException(
+                        "Invoice " + inv.getId() + " Not in UNPAID status. Currently: " + inv.getStatus());
+            }
+        }
+
+        long totalAmount = invoices.stream().mapToLong(RentalInvoice::getTotalAmount).sum();
+        UUID tenantId = invoices.getFirst().getTenantId();
+
+        String invoiceIdsJson = invoiceUuids.stream()
+                .map(UUID::toString)
+                .collect(Collectors.joining(",", "[\"", "\"]"))
+                .replace(",", "\",\"");
+
+        Payment payment = Payment.builder()
+                .referenceId(invoiceUuids.getFirst())
+                .referenceType(invoiceUuids.size() > 1 ? ReferenceType.MULTI_INVOICE : ReferenceType.INVOICE)
+                .invoiceIds(invoiceIdsJson)
+                .tenantId(tenantId)
+                .payerUserId(callerId)
+                .amount(totalAmount)
+                .method(resolveMethod(request.bankCode()))
+                .status(PaymentStatus.PENDING)
+                .note(invoices.size() == 1
+                        ? buildOrderInfo(invoices.getFirst())
+                        : "Pay " + invoices.size() + " invoice")
+                .build();
+        paymentRepository.save(payment);
+
+        log.info("[VNPay] Created PENDING invoice payment={} invoices={} amount={}",
+                payment.getId(), invoiceIdsJson, totalAmount);
+
+        return buildVnpayUrl(payment, totalAmount, request, extractIp(httpRequest));
     }
 
+    private String createQuotePaymentLink(CreatePaymentRequest request,
+                                          HttpServletRequest httpRequest,
+                                          UUID callerId) {
+        UUID quoteId = UUID.fromString(request.quoteId());
+
+        if (paymentRepository.existsByReferenceIdAndStatus(quoteId, PaymentStatus.PENDING)) {
+            throw new IllegalStateException("This quote has pending payment. Please complete the transaction or wait for a timeout.");
+        }
+        if (paymentRepository.existsByReferenceIdAndStatus(quoteId, PaymentStatus.SUCCESS)) {
+            throw new IllegalStateException("This quote has been paid for.");
+        }
+
+        IssueQuoteResponse quote = issueGrpcClient.getQuote(quoteId);
+
+        if (!"APPROVED".equals(quote.status())) {
+            throw new IllegalStateException("The quotation has not been approved. Current status: " + quote.status());
+        }
+
+        if (quote.tenantId() != null && !quote.tenantId().equals(callerId)) {
+            throw new AccessDeniedException("You are not eligible to pay this quote.");
+        }
+
+        long amount = quote.totalPrice().longValue();
+
+        Payment payment = Payment.builder()
+                .referenceId(quoteId)
+                .referenceType(ReferenceType.QUOTE)
+                .tenantId(callerId)
+                .payerUserId(callerId)
+                .amount(amount)
+                .method(resolveMethod(request.bankCode()))
+                .status(PaymentStatus.PENDING)
+                .note("Thanh toán báo giá sửa chữa")
+                .build();
+        paymentRepository.save(payment);
+
+        log.info("[VNPay] Created PENDING quote payment={} quoteId={} amount={}",
+                payment.getId(), quoteId, amount);
+
+        return buildVnpayUrl(payment, amount, request, extractIp(httpRequest));
+    }
+
+    private void handlePostInvoicePayments(Payment payment, String txnNo, Instant now) {
+        List<UUID> invoiceIds = parseInvoiceIds(payment.getInvoiceIds());
+        for (UUID invoiceId : invoiceIds) {
+            invoiceRepository.findById(invoiceId).ifPresent(invoice -> {
+                invoice.setStatus(InvoiceStatus.PAID);
+                invoice.setPaidAt(now);
+                invoiceRepository.save(invoice);
+                handlePostPayment(invoice, txnNo);
+            });
+        }
+    }
+
+    private void handlePostQuotePayment(Payment payment, String txnNo) {
+        try {
+            String periodKey = "QUOTE-" + payment.getReferenceId();
+
+            invoiceRepository.findByContractIdAndPeriodKey(payment.getReferenceId(), periodKey)
+                    .ifPresent(invoice -> {
+                        invoice.setStatus(InvoiceStatus.PAID);
+                        invoice.setPaidAt(payment.getPaidAt());
+                        invoiceRepository.save(invoice);
+                        log.info("[Payment] Invoice PAID invoiceId={} quoteId={}",
+                                invoice.getId(), payment.getReferenceId());
+                    });
+
+            kafka.send("quote-payment-completed", QuotePaymentCompletedEvent.builder()
+                    .quoteId(payment.getReferenceId())
+                    .issueId(null)
+                    .tenantId(payment.getTenantId())
+                    .amount(BigDecimal.valueOf(payment.getAmount()))
+                    .txnNo(txnNo)
+                    .paidAt(payment.getPaidAt())
+                    .build());
+
+            log.info("[Payment] quote-payment-completed sent quoteId={}", payment.getReferenceId());
+        } catch (Exception e) {
+            log.error("[Payment] handlePostQuotePayment failed quoteId={}: {}",
+                    payment.getReferenceId(), e.getMessage(), e);
+        }
+    }
 
     private void handlePostPayment(RentalInvoice invoice, String txnNo) {
         try {
@@ -248,27 +394,17 @@ public class PaymentServiceImpl implements PaymentService {
                         .txnNo(txnNo)
                         .paidAt(invoice.getPaidAt())
                         .build());
-
                 log.info("[Payment] deposit-paid-topic sent invoiceId={}", invoice.getId());
             }
-
         } catch (Exception e) {
             log.error("[Payment] handlePostPayment failed invoiceId={}: {}",
                     invoice.getId(), e.getMessage(), e);
         }
     }
 
-    private String translateType(String type) {
-        return switch (type) {
-            case "DEPOSIT" -> "Tiền cọc";
-            case "MONTHLY_RENT" -> "Tiền thuê tháng";
-            default -> "Hóa đơn";
-        };
-    }
-
-    private String formatVnd(Long amount) {
-        if (amount == null) return "0 ₫";
-        return NumberFormat.getNumberInstance(Locale.of("vi", "VN")).format(amount) + " ₫";
+    private UUID resolveInternalTenantId(String keycloakId) {
+        UserResponse user = userGrpcService.getUserIdAndRoleByKeyCloakId(keycloakId);
+        return UUID.fromString(user.getId());
     }
 
     private String buildVnpayUrl(Payment payment, long totalAmount,
@@ -289,10 +425,11 @@ public class PaymentServiceImpl implements PaymentService {
         params.put("vnp_OrderType", vnPayProperties.getOrderType());
         params.put("vnp_ReturnUrl", vnPayProperties.getReturnUrl());
         params.put("vnp_ExpireDate", expire.format(VNPAY_DATE_FORMAT));
-        params.put("vnp_TxnRef", payment.getId().toString()); // ← dùng paymentId
+        params.put("vnp_TxnRef", payment.getId().toString());
 
-        if (request.bankCode() != null && !request.bankCode().isBlank())
-            params.put("vnp_BankCode", request.bankCode());
+        if (request.bankCode() != null && !request.bankCode().isBlank()) {
+            params.put("vnp_BankCode", request.bankCodeOrDefault());
+        }
 
         String queryString = buildQueryString(params);
         String secureHash = hmacSHA512(vnPayProperties.getHashSecret(), queryString);
@@ -308,6 +445,15 @@ public class PaymentServiceImpl implements PaymentService {
             case PENALTY -> "Thanh toan tien phat";
             default -> "Thanh toan hoa don " + invoice.getId().toString().substring(0, 8);
         };
+    }
+
+    private List<UUID> parseInvoiceIds(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        return Arrays.stream(json.replaceAll("[\\[\\]\"]", "").split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .map(UUID::fromString)
+                .toList();
     }
 
     private String extractIp(HttpServletRequest req) {
@@ -375,5 +521,18 @@ public class PaymentServiceImpl implements PaymentService {
             case "INTCARD" -> PaymentMethod.VNPAY_INTCARD;
             default -> PaymentMethod.VNPAY;
         };
+    }
+
+    private String translateType(String type) {
+        return switch (type) {
+            case "DEPOSIT" -> "Tiền cọc";
+            case "MONTHLY_RENT" -> "Tiền thuê tháng";
+            default -> "Hóa đơn";
+        };
+    }
+
+    private String formatVnd(Long amount) {
+        if (amount == null) return "0 ₫";
+        return NumberFormat.getNumberInstance(Locale.of("vi", "VN")).format(amount) + " ₫";
     }
 }

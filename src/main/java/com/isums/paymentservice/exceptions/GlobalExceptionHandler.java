@@ -2,10 +2,12 @@ package com.isums.paymentservice.exceptions;
 
 import com.isums.paymentservice.domains.dtos.ApiError;
 import com.isums.paymentservice.domains.dtos.ApiResponse;
+import com.isums.paymentservice.domains.dtos.ApiResponses;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -74,5 +76,17 @@ public class GlobalExceptionHandler {
                         .success(false)
                         .message("Internal server error")
                         .build());
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalStateException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponses.fail(HttpStatus.BAD_REQUEST, ex.getMessage()));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponses.fail(HttpStatus.FORBIDDEN, ex.getMessage()));
     }
 }

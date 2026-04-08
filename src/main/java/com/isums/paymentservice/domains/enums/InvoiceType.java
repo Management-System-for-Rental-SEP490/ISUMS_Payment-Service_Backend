@@ -12,5 +12,7 @@ public enum InvoiceType {
 
     PENALTY,
 
-    DEPOSIT_REFUND
+    DEPOSIT_REFUND,
+
+    ISSUE
 }

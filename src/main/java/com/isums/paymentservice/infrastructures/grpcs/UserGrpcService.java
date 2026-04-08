@@ -1,6 +1,8 @@
 package com.isums.paymentservice.infrastructures.grpcs;
 
 import com.isums.userservice.grpc.GetUserByIdRequest;
+import com.isums.userservice.grpc.GetUserIdAndRoleByKeyCloakIdRequest;
+import com.isums.userservice.grpc.UserResponse;
 import com.isums.userservice.grpc.UserServiceGrpc;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -19,5 +21,10 @@ public class UserGrpcService {
         } catch (Exception e) {
             throw new IllegalStateException("Không lấy được email tenant: " + tenantId);
         }
+    }
+
+    public UserResponse getUserIdAndRoleByKeyCloakId(String keycloakId) {
+        GetUserIdAndRoleByKeyCloakIdRequest req = GetUserIdAndRoleByKeyCloakIdRequest.newBuilder().setKeycloakId(keycloakId).build();
+        return userStub.getUserIdAndRoleByKeyCloakId(req);
     }
 }
