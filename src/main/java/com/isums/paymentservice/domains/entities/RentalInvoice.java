@@ -83,6 +83,12 @@ public class RentalInvoice {
     @Column(name = "paid_at")
     private Instant paidAt;
 
+    @Column(name = "refund_payment_method", length = 20)
+    private String refundPaymentMethod;
+
+    @Column(name = "refund_note", columnDefinition = "text")
+    private String refundNote;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

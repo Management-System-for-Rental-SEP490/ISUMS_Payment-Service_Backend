@@ -5,6 +5,7 @@ import com.isums.paymentservice.domains.entities.Payment;
 import com.isums.paymentservice.domains.entities.RentalInvoice;
 import com.isums.paymentservice.domains.enums.*;
 import com.isums.paymentservice.domains.events.DepositPaidEvent;
+import com.isums.paymentservice.domains.events.DepositRefundPaidEvent;
 import com.isums.paymentservice.domains.events.QuotePaymentCompletedEvent;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.domains.factories.VNPayIpnResponseFactory;
@@ -234,6 +235,39 @@ public class PaymentServiceImpl implements PaymentService {
                 invoice.getHouseId(), houseName, houseAddress,
                 payments
         );
+    }
+
+    @Transactional
+    public void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req) {
+        RentalInvoice invoice = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new EntityNotFoundException("Invoice not found"));
+
+        if (invoice.getType() != InvoiceType.DEPOSIT_REFUND) {
+            throw new IllegalStateException("Chỉ áp dụng cho invoice hoàn cọc");
+        }
+        if (invoice.getStatus() == InvoiceStatus.PAID) {
+            throw new IllegalStateException("Invoice đã được xác nhận trước đó");
+        }
+
+        invoice.setStatus(InvoiceStatus.PAID);
+        invoice.setPaidAt(Instant.now());
+        invoice.setRefundPaymentMethod(req.paymentMethod().name());
+        invoice.setRefundNote(req.note());
+        invoiceRepository.save(invoice);
+
+        kafka.send("deposit-refund-paid-topic",
+                invoice.getContractId().toString(),
+                DepositRefundPaidEvent.builder()
+                        .contractId(invoice.getContractId())
+                        .houseId(invoice.getHouseId())
+                        .tenantId(invoice.getTenantId())
+                        .refundAmount(invoice.getTotalAmount())
+                        .paidAt(invoice.getPaidAt())
+                        .messageId(UUID.randomUUID().toString())
+                        .build());
+
+        log.info("[Payment] DEPOSIT_REFUND marked PAID invoiceId={} contractId={}",
+                invoiceId, invoice.getContractId());
     }
 
     private String createInvoicePaymentLink(CreatePaymentRequest request,
