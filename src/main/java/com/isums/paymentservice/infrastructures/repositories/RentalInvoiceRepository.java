@@ -5,6 +5,7 @@ import com.isums.paymentservice.domains.enums.InvoiceStatus;
 import com.isums.paymentservice.domains.enums.InvoiceType;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,5 +25,6 @@ public interface RentalInvoiceRepository extends JpaRepository<RentalInvoice, UU
     Optional<RentalInvoice> findByContractIdAndType(UUID contractId, InvoiceType type);
 
     Optional<RentalInvoice> findByContractIdAndPeriodKey(UUID contractId, String periodKey);
-
+    
+    List<RentalInvoice> findOverdueMonthlyRentInvoices(Instant now);
 }
