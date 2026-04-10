@@ -4,10 +4,7 @@ import com.isums.paymentservice.domains.dtos.*;
 import com.isums.paymentservice.domains.entities.Payment;
 import com.isums.paymentservice.domains.entities.RentalInvoice;
 import com.isums.paymentservice.domains.enums.*;
-import com.isums.paymentservice.domains.events.DepositPaidEvent;
-import com.isums.paymentservice.domains.events.DepositRefundPaidEvent;
-import com.isums.paymentservice.domains.events.QuotePaymentCompletedEvent;
-import com.isums.paymentservice.domains.events.SendEmailEvent;
+import com.isums.paymentservice.domains.events.*;
 import com.isums.paymentservice.domains.factories.VNPayIpnResponseFactory;
 import com.isums.paymentservice.infrastructures.Abtracts.PaymentService;
 import com.isums.paymentservice.infrastructures.grpcs.IssueGrpcClient;
@@ -365,6 +362,18 @@ public class PaymentServiceImpl implements PaymentService {
         for (UUID invoiceId : invoiceIds) {
             invoiceRepository.findById(invoiceId).ifPresent(invoice -> {
                 invoice.setStatus(InvoiceStatus.PAID);
+
+                kafka.send("payment.app-access-changed",
+                        invoice.getHouseId().toString(),
+                        AppAccessChangedEvent.builder()
+                                .tenantId(invoice.getTenantId())
+                                .houseId(invoice.getHouseId())
+                                .contractId(invoice.getContractId())
+                                .restricted(false)   // ← mở lại
+                                .reason("PAYMENT_RECEIVED")
+                                .messageId(UUID.randomUUID().toString())
+                                .build());
+
                 invoice.setPaidAt(now);
                 invoiceRepository.save(invoice);
                 handlePostPayment(invoice, txnNo);

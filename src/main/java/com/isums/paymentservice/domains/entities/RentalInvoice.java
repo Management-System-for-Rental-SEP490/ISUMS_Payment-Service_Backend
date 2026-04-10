@@ -89,6 +89,15 @@ public class RentalInvoice {
     @Column(name = "refund_note", columnDefinition = "text")
     private String refundNote;
 
+    @Column(name = "overdue_days")
+    private Integer overdueDays;
+
+    @Column(name = "power_cut_warned_at")
+    private Instant powerCutWarnedAt;
+
+    @Column(name = "power_cut_confirmed_at")
+    private Instant powerCutConfirmedAt;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
