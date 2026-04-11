@@ -132,6 +132,7 @@ public class LatePaymentScheduler {
     private void applyPenalty(RentalInvoice invoice, int tier) {
         long baseAmount = invoice.getBaseAmount();
         long penaltyAmount = baseAmount * (tier * 5L) / 100;
+        String tenantEmail = userGrpcService.getTenantEmail(invoice.getTenantId());
 
         invoice.setPenaltyAmount(penaltyAmount);
         invoice.setTotalAmount(baseAmount + penaltyAmount);
@@ -139,7 +140,7 @@ public class LatePaymentScheduler {
 
         kafka.send("notification-email",
                 SendEmailEvent.builder()
-                        .to(invoice.getTenantEmail())
+                        .to(tenantEmail)
                         .templateCode("late_payment_penalty_applied")
                         .params(Map.of(
                                 "penaltyPercent", String.valueOf(tier * 5),
