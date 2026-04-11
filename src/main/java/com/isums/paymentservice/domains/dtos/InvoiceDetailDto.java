@@ -14,6 +14,7 @@ import java.util.UUID;
 public record InvoiceDetailDto(
         UUID id,
         UUID contractId,
+        UUID quoteId,
         InvoiceType type,
         String periodKey,
         Long baseAmount,
@@ -34,7 +35,10 @@ public record InvoiceDetailDto(
         String houseName,
         String houseAddress,
 
-        List<PaymentRecord> payments
+        List<PaymentRecord> payments,
+
+        UUID issueId,
+        List<IssueItemDto> issueItems
 ) {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record PaymentRecord(

@@ -45,6 +45,7 @@ public class IssueEventListener {
                     .contractId(event.getQuoteId())
                     .tenantId(event.getTenantId())
                     .houseId(event.getHouseId())
+                    .quoteId(event.getQuoteId())
                     .type(InvoiceType.ISSUE)
                     .periodKey(periodKey)
                     .baseAmount(totalAmount)

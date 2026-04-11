@@ -213,6 +213,28 @@ public class PaymentServiceImpl implements PaymentService {
             log.warn("[Invoice] Cannot fetch house info houseId={}: {}", invoice.getHouseId(), e.getMessage());
         }
 
+        UUID issueId = null;
+        List<IssueItemDto> issueItems = null;
+
+        if (invoice.getType() == InvoiceType.ISSUE) {
+
+            try {
+                var quote = issueGrpcClient.getQuoteDetail(invoice.getQuoteId());
+
+                    issueId = quote.issueId();
+
+                    issueItems = quote.items().stream()
+                            .map(i -> new IssueItemDto(
+                                    i.id(),
+                                    i.itemName(),
+                                    i.price()
+                            ))
+                            .toList();
+            } catch (Exception e) {
+                log.warn("[Invoice] Cannot fetch issue items: {}", e.getMessage());
+            }
+        }
+
         List<InvoiceDetailDto.PaymentRecord> payments = paymentRepository.findByReferenceIdOrderByCreatedAtDesc(invoiceId)
                 .stream()
                 .map(p -> new InvoiceDetailDto.PaymentRecord(
@@ -223,6 +245,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         return new InvoiceDetailDto(
                 invoice.getId(), invoice.getContractId(),
+                invoice.getQuoteId(),
                 invoice.getType(), invoice.getPeriodKey(),
                 invoice.getBaseAmount(), invoice.getServiceAmount(),
                 invoice.getPenaltyAmount(), invoice.getTotalAmount(),
@@ -230,7 +253,7 @@ public class PaymentServiceImpl implements PaymentService {
                 invoice.getPaidAt(), invoice.getCreatedAt(),
                 tenantId, tenantName, invoice.getTenantEmail(), tenantPhone,
                 invoice.getHouseId(), houseName, houseAddress,
-                payments
+                payments,issueId,issueItems
         );
     }
 

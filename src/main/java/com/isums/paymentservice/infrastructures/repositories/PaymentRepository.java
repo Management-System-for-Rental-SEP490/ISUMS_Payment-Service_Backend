@@ -26,11 +26,4 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     List<Payment> findByReferenceIdOrderByCreatedAtDesc(UUID referenceId);
 
-    @Query("""
-    SELECT r FROM RentalInvoice r
-    WHERE r.type = 'MONTHLY_RENT'
-    AND r.status = 'UNPAID'
-    AND r.dueDate < :now
-    """)
-    List<RentalInvoice> findOverdueMonthlyRentInvoices(@Param("now") Instant now);
 }
