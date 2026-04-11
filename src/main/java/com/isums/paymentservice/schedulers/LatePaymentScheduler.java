@@ -7,8 +7,10 @@ import com.isums.paymentservice.domains.events.AppAccessChangedEvent;
 import com.isums.paymentservice.domains.events.PowerCutRequestEvent;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.domains.events.TerminationRequestedEvent;
+import com.isums.paymentservice.infrastructures.grpcs.UserGrpcService;
 import com.isums.paymentservice.infrastructures.repositories.LatePaymentActionLogRepository;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
+import com.isums.userservice.grpc.UserResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -35,6 +37,7 @@ public class LatePaymentScheduler {
     private final RentalInvoiceRepository invoiceRepo;
     private final LatePaymentActionLogRepository actionLogRepo;
     private final KafkaTemplate<String, Object> kafka;
+    private final UserGrpcService userGrpcService;
 
     private static final int GRACE_DAYS = 3;
     private static final ZoneId VN = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -147,11 +150,11 @@ public class LatePaymentScheduler {
                         .build());
     }
 
-    private void publishNotification(RentalInvoice invoice,
-                                     String templateCode, long daysLate) {
+    private void publishNotification(RentalInvoice invoice, String templateCode, long daysLate) {
+        String tenantEmail = userGrpcService.getTenantEmail(invoice.getTenantId());
         kafka.send("notification-email",
                 SendEmailEvent.builder()
-                        .to(invoice.getTenantEmail())
+                        .to(tenantEmail)
                         .templateCode(templateCode)
                         .params(Map.of(
                                 "totalAmount", formatVnd(invoice.getTotalAmount()),
@@ -162,9 +165,10 @@ public class LatePaymentScheduler {
     }
 
     private void publishFormalWarning(RentalInvoice invoice) {
+        String tenantEmail = userGrpcService.getTenantEmail(invoice.getTenantId());
         kafka.send("notification-email",
                 SendEmailEvent.builder()
-                        .to(invoice.getTenantEmail())
+                        .to(tenantEmail)
                         .templateCode("late_payment_formal_warning")
                         .params(Map.of(
                                 "totalAmount", formatVnd(invoice.getTotalAmount()),
