@@ -29,10 +29,10 @@ public interface RentalInvoiceRepository extends JpaRepository<RentalInvoice, UU
     Optional<RentalInvoice> findByContractIdAndPeriodKey(UUID contractId, String periodKey);
 
     @Query("""
-    SELECT r FROM RentalInvoice r
-    WHERE r.type = 'MONTHLY_RENT'
-    AND r.status = 'UNPAID'
-    AND r.dueDate < :now
-    """)
+            SELECT r FROM RentalInvoice r
+            WHERE r.type = 'MONTHLY_RENT'
+            AND r.status = 'UNPAID'
+            AND r.dueDate < :now
+            """)
     List<RentalInvoice> findOverdueMonthlyRentInvoices(@Param("now") Instant now);
 }

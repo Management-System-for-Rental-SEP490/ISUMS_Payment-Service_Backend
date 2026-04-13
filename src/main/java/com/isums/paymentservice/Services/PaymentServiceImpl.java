@@ -1,4 +1,4 @@
-package com.isums.paymentservice.Services;
+package com.isums.paymentservice.services;
 
 import com.isums.paymentservice.domains.dtos.*;
 import com.isums.paymentservice.domains.entities.Payment;
@@ -80,7 +80,7 @@ public class PaymentServiceImpl implements PaymentService {
             }
 
             UUID paymentId = UUID.fromString(ipn.getVnp_TxnRef());
-            Payment payment = paymentRepository.findById(paymentId).orElse(null);
+            Payment payment = paymentRepository.findByIdForUpdate(paymentId).orElse(null);
 
             if (payment == null) return VNPayIpnResponseFactory.from(VNPayIpnCode.ORDER_NOT_FOUND);
             if (payment.getStatus() != PaymentStatus.PENDING)
@@ -113,6 +113,22 @@ public class PaymentServiceImpl implements PaymentService {
         } catch (Exception e) {
             log.error("[VNPay IPN] Unexpected error: {}", e.getMessage(), e);
             return VNPayIpnResponseFactory.from(VNPayIpnCode.UNKNOWN_ERROR);
+        }
+    }
+
+    @Override
+    public String handleReturn(VNPayIpnRequest request) {
+        boolean signatureValid = isValidSignature(request);
+        boolean paymentSuccess = signatureValid
+                && "00".equals(request.getVnp_ResponseCode())
+                && "00".equals(request.getVnp_TransactionStatus());
+
+        String txnRef = request.getVnp_TxnRef() != null ? request.getVnp_TxnRef() : "";
+        if (paymentSuccess) {
+            return outsystemPaymentUrl + "/result?status=success&txnRef=" + txnRef;
+        } else {
+            String code = request.getVnp_ResponseCode() != null ? request.getVnp_ResponseCode() : "99";
+            return outsystemPaymentUrl + "/result?status=failed&txnRef=" + txnRef + "&code=" + code;
         }
     }
 
@@ -187,19 +203,13 @@ public class PaymentServiceImpl implements PaymentService {
         RentalInvoice invoice = invoiceRepository.findById(invoiceId)
                 .orElseThrow(() -> new EntityNotFoundException("Invoice not found: " + invoiceId));
 
-        String tenantName = null, tenantPhone = null;
-        UUID tenantId = null;
-        try {
-            UserResponse user = userGrpcService.getUserIdAndRoleByKeyCloakId(keycloakId);
-            tenantId = UUID.fromString(user.getId());
-            if (!invoice.getTenantId().equals(tenantId)) {
-                throw new AccessDeniedException("Bạn không có quyền xem hóa đơn này.");
-            }
-            tenantName = user.getName();
-            tenantPhone = user.getPhoneNumber();
-        } catch (Exception e) {
-            log.warn("[Invoice] Cannot fetch tenant info tenantId={}: {}", tenantId, e.getMessage());
+        UserResponse user = userGrpcService.getUserIdAndRoleByKeyCloakId(keycloakId);
+        UUID tenantId = UUID.fromString(user.getId());
+        if (!invoice.getTenantId().equals(tenantId)) {
+            throw new AccessDeniedException("Bạn không có quyền xem hóa đơn này.");
         }
+        String tenantName = user.getName();
+        String tenantPhone = user.getPhoneNumber();
 
         // House info
         String houseName = null, houseAddress = null;
@@ -392,7 +402,7 @@ public class PaymentServiceImpl implements PaymentService {
                                 .tenantId(invoice.getTenantId())
                                 .houseId(invoice.getHouseId())
                                 .contractId(invoice.getContractId())
-                                .restricted(false)   // ← mở lại
+                                .restricted(false)
                                 .reason("PAYMENT_RECEIVED")
                                 .messageId(UUID.randomUUID().toString())
                                 .build());
