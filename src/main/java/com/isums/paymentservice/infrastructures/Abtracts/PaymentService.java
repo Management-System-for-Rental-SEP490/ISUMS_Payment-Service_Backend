@@ -24,4 +24,6 @@ public interface PaymentService {
     InvoiceDetailDto getInvoiceById(UUID invoiceId, String keycloakId);
 
     void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req);
+
+    String handleReturn(VNPayIpnRequest request);
 }

@@ -8,6 +8,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -79,6 +81,18 @@ public class PaymentController {
     @GetMapping("/vnpay/ipn")
     public VNPayIpnResponse handleIpn(VNPayIpnRequest ipn) {
         return paymentService.handleIpn(ipn);
+    }
+
+    @Operation(
+            summary = "[VNPay] Return URL redirect",
+            description = "Trình duyệt được redirect về đây sau khi thanh toán VNPay. Không cần JWT. Redirect tiếp tới frontend."
+    )
+    @GetMapping("/vnpay/return")
+    public ResponseEntity<Void> handleReturn(VNPayIpnRequest params) {
+        String redirectUrl = paymentService.handleReturn(params);
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .header("Location", redirectUrl)
+                .build();
     }
 
     @Operation(
