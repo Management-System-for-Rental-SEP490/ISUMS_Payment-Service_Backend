@@ -39,6 +39,9 @@ public class RentalInvoice {
     @Column(name = "house_id", nullable = false)
     private UUID houseId;
 
+    @Column(name = "quote_id")
+    private UUID quoteId;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private InvoiceType type;
