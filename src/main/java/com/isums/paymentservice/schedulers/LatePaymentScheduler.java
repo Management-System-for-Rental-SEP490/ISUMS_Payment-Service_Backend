@@ -42,7 +42,7 @@ public class LatePaymentScheduler {
     private static final int GRACE_DAYS = 3;
     private static final ZoneId VN = ZoneId.of("Asia/Ho_Chi_Minh");
 
-    @Scheduled(cron = "0 0 9 * * *", zone = "Asia/Ho_Chi_Minh")
+    @Scheduled(cron = "30 4 15 * * *", zone = "Asia/Ho_Chi_Minh")
     @Transactional
     public void processLatePayments() {
         LocalDate today = LocalDate.now(VN);

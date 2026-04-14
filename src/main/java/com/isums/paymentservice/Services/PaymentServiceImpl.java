@@ -1,4 +1,4 @@
-package com.isums.paymentservice.services;
+package com.isums.paymentservice.Services;
 
 import com.isums.paymentservice.domains.dtos.*;
 import com.isums.paymentservice.domains.entities.Payment;
