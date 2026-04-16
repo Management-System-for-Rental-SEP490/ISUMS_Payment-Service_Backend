@@ -7,11 +7,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.core.MethodParameter;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,6 +56,18 @@ class GlobalExceptionHandlerTest {
         ResponseEntity<ApiResponse<Void>> res =
                 handler.handleIllegalArgument(new IllegalArgumentException("bad arg"));
         assertThat(res.getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("handleNoResourceFound returns 404 instead of generic 500")
+    void noResourceFound() {
+        ResponseEntity<ApiResponse<Void>> res =
+                handler.handleNoResourceFound(new NoResourceFoundException(
+                        HttpMethod.GET,
+                        "/api/payments/v3/api-docs",
+                        "No static resource api/payments/v3/api-docs"));
+        assertThat(res.getStatusCode().value()).isEqualTo(404);
+        assertThat(res.getBody().getMessage()).contains("api/payments/v3/api-docs");
     }
 
     @Test

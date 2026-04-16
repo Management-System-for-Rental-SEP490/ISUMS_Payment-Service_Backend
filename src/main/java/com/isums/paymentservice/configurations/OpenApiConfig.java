@@ -17,7 +17,7 @@ public class OpenApiConfig {
     public OpenAPI openAPI() {
         return new OpenAPI()
                 .info(new Info()
-                        .title("EContract Service API")
+                        .title("Payment Service API")
                         .version("v1")
                         .description("Có nhiều thứ rất là khó nói vậy nên là lá đò"))
                 .addSecurityItem(new SecurityRequirement().addList(BEARER_SCHEME))
