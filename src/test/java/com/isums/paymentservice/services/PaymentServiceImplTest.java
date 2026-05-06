@@ -1,7 +1,6 @@
 package com.isums.paymentservice.services;
 
 import com.isums.houseservice.grpc.HouseResponse;
-import com.isums.paymentservice.services.PaymentServiceImpl;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.domains.dtos.*;
 import com.isums.paymentservice.domains.entities.Payment;
@@ -488,6 +487,33 @@ class PaymentServiceImplTest {
 
             verify(kafka).send(eq("payment-paid-topic"), any());
             verify(kafka).send(eq("deposit-paid-topic"), any());
+        }
+
+        @Test
+        @DisplayName("publishes quote-payment-completed when ISSUE invoice is paid through invoice flow")
+        void issueInvoiceSuccessPublishesQuoteCompletion() {
+            when(vnPayProperties.getHashSecret()).thenReturn(HASH_SECRET);
+            UUID paymentId = UUID.randomUUID();
+            UUID invoiceId = UUID.randomUUID();
+            UUID quoteId = UUID.randomUUID();
+            VNPayIpnRequest ipn = buildIpn(paymentId, 25000000L, "00", "00");
+
+            Payment p = Payment.builder().id(paymentId).amount(250_000L)
+                    .status(PaymentStatus.PENDING).referenceType(ReferenceType.INVOICE)
+                    .invoiceIds("[\"" + invoiceId + "\"]").build();
+            RentalInvoice inv = invoice(invoiceId, InvoiceStatus.UNPAID, 250_000L, InvoiceType.ISSUE);
+            inv.setQuoteId(quoteId);
+            inv.setContractId(quoteId);
+
+            when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+            when(invoiceRepository.findById(invoiceId)).thenReturn(Optional.of(inv));
+
+            VNPayIpnResponse res = service.handleIpn(ipn);
+
+            assertThat(res.getRspCode()).isEqualTo("00");
+            assertThat(inv.getStatus()).isEqualTo(InvoiceStatus.PAID);
+            verify(kafka).send(eq("payment-paid-topic"), any());
+            verify(kafka).send(eq("quote-payment-completed"), any());
         }
 
         @Test

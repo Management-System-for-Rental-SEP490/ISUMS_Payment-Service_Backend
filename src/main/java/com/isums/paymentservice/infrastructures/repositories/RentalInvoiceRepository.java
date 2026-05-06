@@ -26,7 +26,11 @@ public interface RentalInvoiceRepository extends JpaRepository<RentalInvoice, UU
 
     Optional<RentalInvoice> findByContractIdAndType(UUID contractId, InvoiceType type);
 
+    Optional<RentalInvoice> findFirstByContractIdAndTypeOrderByDueDateAsc(UUID contractId, InvoiceType type);
+
     Optional<RentalInvoice> findByContractIdAndPeriodKey(UUID contractId, String periodKey);
+
+    List<RentalInvoice> findByContractIdAndStatus(UUID contractId, InvoiceStatus status);
 
     @Query("""
             SELECT r FROM RentalInvoice r

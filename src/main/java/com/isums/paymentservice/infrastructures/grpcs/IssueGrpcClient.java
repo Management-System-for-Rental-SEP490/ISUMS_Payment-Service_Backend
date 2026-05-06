@@ -38,13 +38,12 @@ public class IssueGrpcClient {
 
         } catch (StatusRuntimeException e) {
             if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
-                throw new IllegalArgumentException("Báo giá không tồn tại: " + quoteId);
+                throw new IllegalArgumentException("Quote does not exist: " + quoteId);
             }
             log.error("[IssueGrpcClient] getQuote failed quoteId={}: {}", quoteId, e.getMessage());
             throw new IllegalStateException("Unable to retrieve price information: " + e.getMessage(), e);
         }
     }
-
 
     public IssueQuoteDetailResponse getQuoteDetail(UUID quoteId){
         try {
@@ -69,7 +68,7 @@ public class IssueGrpcClient {
 
         } catch (StatusRuntimeException e) {
             if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
-                throw new IllegalArgumentException("Báo giá không tồn tại: " + quoteId);
+                throw new IllegalArgumentException("Quote does not exist: " + quoteId);
             }
 
             log.error("[IssueGrpcClient] getQuoteDetail failed quoteId={}: {}", quoteId, e.getMessage());

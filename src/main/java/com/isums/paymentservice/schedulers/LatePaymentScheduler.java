@@ -66,45 +66,36 @@ public class LatePaymentScheduler {
         LocalDate dueDate = invoice.getDueDate().atZone(VN).toLocalDate();
         long daysLate = ChronoUnit.DAYS.between(dueDate, today);
 
-        // Cập nhật overdueDays
         invoice.setOverdueDays((int) daysLate);
         invoiceRepo.save(invoice);
 
-        // Ngày +0: nhắc lần 1
         triggerOnce(invoice, LatePaymentAction.NOTIFY_DAY_0, daysLate >= 0, () ->
                 publishNotification(invoice, "late_payment_reminder_day0", daysLate));
 
-        // Ngày +1: nhắc lần 2
         triggerOnce(invoice, LatePaymentAction.NOTIFY_DAY_1, daysLate >= 1, () ->
                 publishNotification(invoice, "late_payment_reminder_day1", daysLate));
 
-        // Ngày +2: nhắc lần 3
         triggerOnce(invoice, LatePaymentAction.NOTIFY_DAY_2, daysLate >= 2, () ->
                 publishNotification(invoice, "late_payment_reminder_day2", daysLate));
 
-        // Ngày +3: phạt tier 1 (5%)
         triggerOnce(invoice, LatePaymentAction.PENALTY_TIER_1, daysLate >= GRACE_DAYS, () ->
                 applyPenalty(invoice, 1));
 
-        // Ngày +7: email cảnh báo chính thức + app read-only
         triggerOnce(invoice, LatePaymentAction.FORMAL_WARNING, daysLate >= 7, () ->
                 publishFormalWarning(invoice));
 
         triggerOnce(invoice, LatePaymentAction.APP_RESTRICTED, daysLate >= 7, () ->
                 publishAppRestriction(invoice, true));
 
-        // Ngày +8: phạt tier 2 (10%)
         triggerOnce(invoice, LatePaymentAction.PENALTY_TIER_2, daysLate >= 8, () ->
                 applyPenalty(invoice, 2));
 
-        // Ngày +14: phạt tier 3 (15%) + gửi yêu cầu cắt điện lên chủ nhà
         triggerOnce(invoice, LatePaymentAction.PENALTY_TIER_3, daysLate >= 14, () ->
                 applyPenalty(invoice, 3));
 
         triggerOnce(invoice, LatePaymentAction.POWER_CUT_REQUEST, daysLate >= 14, () ->
                 publishPowerCutRequest(invoice));
 
-        // Ngày +30: bắt đầu quy trình chấm dứt hợp đồng
         triggerOnce(invoice, LatePaymentAction.TERMINATION_INITIATED, daysLate >= 30, () ->
                 publishTerminationRequest(invoice));
     }
@@ -226,3 +217,4 @@ public class LatePaymentScheduler {
     private static final DateTimeFormatter DMY =
             DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
 }
+

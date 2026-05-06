@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.UUID;
 
-@Tag(name = "Payment", description = "Quản lý thanh toán VNPay và hóa đơn thuê nhà")
+@Tag(name = "Payment", description = "Manage VNPay payments and rental invoices")
 @RestController
 @RequestMapping("/api/payments")
 @RequiredArgsConstructor
@@ -28,9 +28,9 @@ public class PaymentController {
     private final PaymentTokenService paymentTokenService;
 
     @Operation(
-            summary = "Lấy danh sách hóa đơn của tenant",
-            description = "Trả về hóa đơn của tenant hiện tại theo thứ tự dueDate tăng dần. " +
-                    "Truyền houseId để lọc theo nhà cụ thể."
+            summary = "Get the tenant's invoice list",
+            description = "Returns the current tenant's invoices ordered by dueDate ascending. " +
+                    "Pass houseId to filter by a specific house."
     )
     @GetMapping("/invoices")
     public ApiResponse<List<InvoiceDto>> getMyInvoices(
@@ -42,8 +42,17 @@ public class PaymentController {
     }
 
     @Operation(
-            summary = "Xem chi tiết hóa đơn",
-            description = "Tenant chỉ xem được hóa đơn của chính mình. Trả về đầy đủ thông tin tenant, nhà, lịch sử thanh toán."
+            summary = "Get available payment methods",
+            description = "Returns the list of payment methods whitelisted for the issue flow: cash and bank transfer."
+    )
+    @GetMapping("/methods")
+    public ApiResponse<List<PaymentMethodOptionDto>> getAvailablePaymentMethods() {
+        return ApiResponses.ok(paymentService.getAvailablePaymentMethods(), "Success");
+    }
+
+    @Operation(
+            summary = "View invoice details",
+            description = "Tenants can only view their own invoices. Returns full tenant information, house, and payment history."
     )
     @GetMapping("/invoices/{invoiceId}")
     public ApiResponse<InvoiceDetailDto> getInvoiceById(
@@ -55,13 +64,13 @@ public class PaymentController {
     }
 
     @Operation(
-            summary = "Tạo link thanh toán VNPay",
+            summary = "Create a VNPay payment link",
             description = """
-                    Hỗ trợ 2 luồng:
-                    - **Invoice**: cung cấp `invoiceIds` (một hoặc nhiều hóa đơn tiền thuê/cọc).
-                    - **Quote**: cung cấp `quoteId` (báo giá sửa chữa đã được duyệt, ticket ở trạng thái WAITING_PAYMENT).
+                    Supports 2 flows:
+                    - **Invoice**: provide `invoiceIds` (one or more rental/deposit invoices).
+                    - **Quote**: provide `quoteId` (an approved repair quote, ticket in WAITING_PAYMENT status).
                     
-                    Chỉ được cung cấp một trong hai, không cả hai.
+                    Only one of the two may be provided, not both.
                     """
     )
     @PostMapping("/vnpay")
@@ -71,12 +80,12 @@ public class PaymentController {
             HttpServletRequest httpRequest) {
 
         String keycloakId = jwt.getSubject();
-        return ApiResponses.ok(paymentService.createPaymentVNPayLink(request, httpRequest, keycloakId), "Link thanh toán VNPay");
+        return ApiResponses.ok(paymentService.createPaymentVNPayLink(request, httpRequest, keycloakId), "VNPay payment link");
     }
 
     @Operation(
             summary = "[VNPay] IPN callback",
-            description = "Endpoint VNPay gọi sau khi thanh toán. Không cần JWT."
+            description = "Endpoint that VNPay calls after payment. JWT is not required."
     )
     @GetMapping("/vnpay/ipn")
     public VNPayIpnResponse handleIpn(VNPayIpnRequest ipn) {
@@ -84,8 +93,33 @@ public class PaymentController {
     }
 
     @Operation(
+            summary = "Create a VNPay link for Notification PREMIUM subscription",
+            description = """
+                    Distinct from {@code POST /vnpay} (which pays an invoice
+                    or repair quote). Body specifies how many months of
+                    PREMIUM to buy; total amount = months × monthly price.
+
+                    On IPN success the service emits Kafka
+                    {@code payment.subscription-activated} which Notification
+                    Service consumes to flip the user's tier.
+                    """
+    )
+    @PostMapping("/vnpay/subscription")
+    public ApiResponse<String> createSubscriptionPaymentLink(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestBody @Valid CreateSubscriptionPaymentRequest request,
+            HttpServletRequest httpRequest) {
+
+        String keycloakId = jwt.getSubject();
+        return ApiResponses.ok(
+                paymentService.createSubscriptionPaymentLink(request, httpRequest, keycloakId),
+                "VNPay subscription payment link"
+        );
+    }
+
+    @Operation(
             summary = "[VNPay] Return URL redirect",
-            description = "Trình duyệt được redirect về đây sau khi thanh toán VNPay. Không cần JWT. Redirect tiếp tới frontend."
+            description = "The browser is redirected here after a VNPay payment. JWT is not required. Redirects onward to the frontend."
     )
     @GetMapping("/vnpay/return")
     public ResponseEntity<Void> handleReturn(VNPayIpnRequest params) {
@@ -96,8 +130,8 @@ public class PaymentController {
     }
 
     @Operation(
-            summary = "[OUTSYSTEM] Xem chi tiết hóa đơn",
-            description = "Tenant dùng link từ email để xem hóa đơn mà không cần đăng nhập."
+            summary = "[OUTSYSTEM] View invoice details",
+            description = "Tenant uses the link from email to view the invoice without logging in."
     )
     @GetMapping("/outsystem/invoices/{invoiceId}")
     public ApiResponse<PublicInvoiceDto> getPublicInvoice(
@@ -109,8 +143,8 @@ public class PaymentController {
     }
 
     @Operation(
-            summary = "[OUTSYSTEM] Tạo link thanh toán từ email",
-            description = "Tạo link VNPay từ email notification (không cần đăng nhập)."
+            summary = "[OUTSYSTEM] Create a payment link from email",
+            description = "Creates a VNPay link from an email notification (no login required)."
     )
     @PostMapping("/outsystem/vnpay")
     public ApiResponse<String> createPaymentLinkOutsystem(
@@ -121,14 +155,14 @@ public class PaymentController {
 
         return ApiResponses.ok(
                 paymentService.createPaymentVNPayLinkOutsystem(invoiceId, bankCode, locale, httpRequest),
-                "Link thanh toán VNPay");
+                "VNPay payment link");
     }
 
-    @Operation(summary = "Gửi lại email thông báo thanh toán")
+    @Operation(summary = "Resend the payment notification email")
     @PostMapping("/invoices/{invoiceId}/resend")
     public ApiResponse<Void> resendNotification(@PathVariable UUID invoiceId) {
         paymentService.resendPaymentNotification(invoiceId);
-        return ApiResponses.ok(null, "Đã gửi lại thông báo thanh toán");
+        return ApiResponses.ok(null, "Payment notification has been resent");
     }
 
     @PutMapping("/{invoiceId}/mark-refund-paid")
@@ -137,6 +171,6 @@ public class PaymentController {
             @PathVariable UUID invoiceId,
             @RequestBody @Valid MarkRefundPaidRequest req) {
         paymentService.markDepositRefundPaid(invoiceId, req);
-        return ApiResponses.ok(null, "Đã xác nhận hoàn cọc");
+        return ApiResponses.ok(null, "Deposit refund confirmed");
     }
 }

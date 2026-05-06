@@ -1,4 +1,4 @@
-package com.isums.paymentservice.Services;
+package com.isums.paymentservice.services;
 
 import com.isums.paymentservice.domains.dtos.*;
 import com.isums.paymentservice.domains.entities.Payment;
@@ -52,6 +52,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final InvoiceMapper invoiceMapper;
     private final IssueGrpcClient issueGrpcClient;
     private final HouseGrpcClient houseGrpcClient;
+    private final com.isums.paymentservice.infrastructures.client.SubscriptionPlanClient planClient;
 
     private static final DateTimeFormatter VNPAY_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final DateTimeFormatter DMY = DateTimeFormatter.ofPattern("dd/MM/yyyy")
@@ -60,6 +61,13 @@ public class PaymentServiceImpl implements PaymentService {
     @Value("${app.payment.outsystem-url:https://outsystem.isums.pro/payments}")
     private String outsystemPaymentUrl;
 
+    /**
+     * PREMIUM subscription price per month in VND. Source of truth lives
+     * here in Payment-Service; Notification-Service mirrors the same
+     * default for FE display purposes only.
+     */
+    @Value("${app.payment.subscription.price-vnd-per-month:19000}")
+    private long subscriptionPricePerMonth;
 
     @Override
     @Transactional
@@ -69,6 +77,87 @@ public class PaymentServiceImpl implements PaymentService {
             return createQuotePaymentLink(request, httpRequest, callerId);
         }
         return createInvoicePaymentLink(request, httpRequest, callerId);
+    }
+
+    @Override
+    @Transactional
+    public String createSubscriptionPaymentLink(CreateSubscriptionPaymentRequest request,
+                                                  HttpServletRequest httpRequest,
+                                                  String keycloakId) {
+        UUID callerId = resolveInternalTenantId(keycloakId);
+
+        // Tapping "Mua gói" again means the user wants a fresh checkout —
+        // cancel any open PENDING SUBSCRIPTION rows so we don't accumulate
+        // dangling intents and don't block the new request behind a TTL.
+        //
+        // Safe even if the cancelled row ends up paid concurrently: the IPN
+        // handler in {@code handleIpn} reads {@code status == PENDING} before
+        // flipping to SUCCESS, so a row marked FAILED here stays FAILED and
+        // returns {@code ALREADY_PROCESSED} to VNPay. No double-credit risk.
+        var openPending = paymentRepository
+                .findByReferenceIdAndReferenceTypeAndStatusOrderByCreatedAtDesc(
+                        callerId, ReferenceType.SUBSCRIPTION, PaymentStatus.PENDING);
+        for (Payment prev : openPending) {
+            prev.setStatus(PaymentStatus.FAILED);
+            prev.setGatewayResponse("{\"reason\":\"superseded_by_new_attempt\"}");
+            paymentRepository.save(prev);
+            log.info("[VNPay] Superseded PENDING subscription={} userId={} (user started new attempt)",
+                    prev.getId(), callerId);
+        }
+
+        // Resolve price + duration. planId is authoritative (looked up
+        // from Notification-Service's curated catalogue); months is the
+        // legacy fallback (19k × N) we keep for API back-compat.
+        long amount;
+        int durationDays;
+        String planCode;
+        if (request.planId() != null) {
+            String bearer = httpRequest.getHeader("Authorization");
+            var plan = planClient.fetchPlan(request.planId(), bearer);
+            if (!plan.active()) {
+                throw new IllegalStateException("Gói đăng ký đã ngừng bán: " + plan.code());
+            }
+            amount       = plan.priceVnd();
+            durationDays = plan.durationDays();
+            planCode     = plan.code();
+        } else if (request.months() != null) {
+            amount       = subscriptionPricePerMonth * (long) request.months();
+            durationDays = request.months() * 30;
+            planCode     = "LEGACY_" + request.months() + "M";
+        } else {
+            throw new IllegalArgumentException("Either planId or months is required");
+        }
+
+        Payment payment = Payment.builder()
+                .referenceId(callerId)
+                .referenceType(ReferenceType.SUBSCRIPTION)
+                .tenantId(callerId)
+                .payerUserId(callerId)
+                .amount(amount)
+                .method(resolveMethod(request.bankCode()))
+                .status(PaymentStatus.PENDING)
+                .note("ISUMS PREMIUM " + planCode)
+                // `invoice_ids` doubles as the metadata blob for the IPN
+                // handler — encoding planCode + durationDays + keycloakId
+                // here avoids another DB column for one-off subscription
+                // data. keycloakId is needed because the cross-service
+                // contract with Notification-Service uses Keycloak `sub`
+                // as the user key (its tables are keyed by JWT.sub, not
+                // our internal user UUID).
+                .invoiceIds(String.format(
+                        "{\"planCode\":\"%s\",\"durationDays\":%d,\"planId\":\"%s\",\"keycloakId\":\"%s\"}",
+                        planCode, durationDays,
+                        request.planId() != null ? request.planId() : "",
+                        keycloakId))
+                .build();
+        paymentRepository.save(payment);
+
+        log.info("[VNPay] Created PENDING subscription payment={} userId={} plan={} duration={}d amount={}",
+                payment.getId(), callerId, planCode, durationDays, amount);
+
+        CreatePaymentRequest adapter = new CreatePaymentRequest(
+                null, null, request.bankCode(), request.locale());
+        return buildVnpayUrl(payment, amount, adapter, extractIp(httpRequest));
     }
 
     @Override
@@ -101,10 +190,10 @@ public class PaymentServiceImpl implements PaymentService {
             paymentRepository.save(payment);
 
             if (isSuccess) {
-                if (payment.getReferenceType() == ReferenceType.QUOTE) {
-                    handlePostQuotePayment(payment, ipn.getVnp_TransactionNo());
-                } else {
-                    handlePostInvoicePayments(payment, ipn.getVnp_TransactionNo(), now);
+                switch (payment.getReferenceType()) {
+                    case QUOTE        -> handlePostQuotePayment(payment, ipn.getVnp_TransactionNo());
+                    case SUBSCRIPTION -> handlePostSubscriptionPayment(payment, ipn.getVnp_TransactionNo());
+                    default            -> handlePostInvoicePayments(payment, ipn.getVnp_TransactionNo(), now);
                 }
             }
 
@@ -153,7 +242,7 @@ public class PaymentServiceImpl implements PaymentService {
                         "amount", formatVnd(invoice.getTotalAmount()),
                         "dueDate", DMY.format(invoice.getDueDate()),
                         "paymentUrl", paymentUrl,
-                        "expiresIn", "7 ngày"
+                        "expiresIn", "7 days"
                 ))
                 .build());
 
@@ -188,6 +277,18 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<PaymentMethodOptionDto> getAvailablePaymentMethods() {
+        return List.of(
+                new PaymentMethodOptionDto(PaymentMethod.VNPAY.name(),         "VNPay"),
+                new PaymentMethodOptionDto(PaymentMethod.VNPAY_QR.name(),      "VNPay QR"),
+                new PaymentMethodOptionDto(PaymentMethod.VNPAY_BANK.name(),    "VNPay Bank"),
+                new PaymentMethodOptionDto(PaymentMethod.VNPAY_INTCARD.name(), "VNPay International Card"),
+                new PaymentMethodOptionDto(PaymentMethod.BANK_TRANSFER.name(), "Bank transfer")
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<InvoiceDto> getMyInvoices(String keycloakId, @Nullable UUID houseId) {
         UUID tenantId = resolveInternalTenantId(keycloakId);
         List<RentalInvoice> invoices = houseId != null
@@ -206,12 +307,11 @@ public class PaymentServiceImpl implements PaymentService {
         UserResponse user = userGrpcService.getUserIdAndRoleByKeyCloakId(keycloakId);
         UUID tenantId = UUID.fromString(user.getId());
         if (!invoice.getTenantId().equals(tenantId)) {
-            throw new AccessDeniedException("Bạn không có quyền xem hóa đơn này.");
+            throw new AccessDeniedException("You do not have permission to view this invoice.");
         }
         String tenantName = user.getName();
         String tenantPhone = user.getPhoneNumber();
 
-        // House info
         String houseName = null, houseAddress = null;
         try {
             var house = houseGrpcClient.getHouse(invoice.getHouseId());
@@ -273,10 +373,10 @@ public class PaymentServiceImpl implements PaymentService {
                 .orElseThrow(() -> new EntityNotFoundException("Invoice not found"));
 
         if (invoice.getType() != InvoiceType.DEPOSIT_REFUND) {
-            throw new IllegalStateException("Chỉ áp dụng cho invoice hoàn cọc");
+            throw new IllegalStateException("Only applicable to deposit-refund invoices");
         }
         if (invoice.getStatus() == InvoiceStatus.PAID) {
-            throw new IllegalStateException("Invoice đã được xác nhận trước đó");
+            throw new IllegalStateException("Invoice has already been confirmed");
         }
 
         invoice.setStatus(InvoiceStatus.PAID);
@@ -380,7 +480,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .amount(amount)
                 .method(resolveMethod(request.bankCode()))
                 .status(PaymentStatus.PENDING)
-                .note("Thanh toán báo giá sửa chữa")
+                .note("Repair-quote payment")
                 .build();
         paymentRepository.save(payment);
 
@@ -412,6 +512,69 @@ public class PaymentServiceImpl implements PaymentService {
                 handlePostPayment(invoice, txnNo);
             });
         }
+    }
+
+    /**
+     * Notification-Service PREMIUM activation. Emits Kafka topic
+     * {@code payment.subscription-activated} which the notification
+     * service consumes to flip the user's tier. Idempotent on the
+     * consumer side, so a Kafka redelivery is safe.
+     */
+    private void handlePostSubscriptionPayment(Payment payment, String txnNo) {
+        try {
+            int durationDays = parseMetadataInt(payment.getInvoiceIds(), "durationDays", 30);
+            String planCode  = parseMetadataString(payment.getInvoiceIds(), "planCode", "");
+            String planId    = parseMetadataString(payment.getInvoiceIds(), "planId",   "");
+            String keycloakId = parseMetadataString(payment.getInvoiceIds(), "keycloakId", "");
+
+            // Cross-service user key — Notification-Service stores its
+            // notification_subscriptions / preferences rows keyed by JWT
+            // sub (Keycloak ID), so the listener must receive that. Fall
+            // back to the internal payerUserId only for legacy intents
+            // created before keycloakId was persisted in invoice_ids JSON.
+            String eventUserId = !keycloakId.isBlank()
+                    ? keycloakId
+                    : payment.getPayerUserId().toString();
+
+            Map<String, Object> event = new HashMap<>();
+            event.put("intentId",     payment.getId().toString());
+            event.put("userId",       eventUserId);
+            event.put("purpose",      "NOTIFICATION_PREMIUM");
+            event.put("durationDays", durationDays);
+            event.put("planCode",     planCode);
+            event.put("planId",       planId);
+            event.put("amountVnd",    payment.getAmount());
+            event.put("provider",     "VNPAY");
+            event.put("txnRef",       payment.getId().toString());
+            event.put("txnNo",        txnNo);
+            event.put("paidAt",
+                    payment.getPaidAt() != null ? payment.getPaidAt().toString()
+                                                 : Instant.now().toString());
+            kafka.send("payment.subscription-activated", eventUserId, event);
+            log.info("[Payment] subscription-activated emitted keycloakUserId={} internalPayerId={} plan={} duration={}d amount={}",
+                    eventUserId, payment.getPayerUserId(), planCode, durationDays, payment.getAmount());
+        } catch (Exception e) {
+            log.error("[Payment] handlePostSubscriptionPayment failed paymentId={}: {}",
+                    payment.getId(), e.getMessage(), e);
+        }
+    }
+
+    private int parseMetadataInt(String json, String key, int fallback) {
+        if (json == null || json.isBlank()) return fallback;
+        try {
+            var m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*(\\d+)").matcher(json);
+            if (m.find()) return Integer.parseInt(m.group(1));
+        } catch (Exception ignored) {}
+        return fallback;
+    }
+
+    private String parseMetadataString(String json, String key, String fallback) {
+        if (json == null || json.isBlank()) return fallback;
+        try {
+            var m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
+            if (m.find()) return m.group(1);
+        } catch (Exception ignored) {}
+        return fallback;
     }
 
     private void handlePostQuotePayment(Payment payment, String txnNo) {
@@ -603,7 +766,10 @@ public class PaymentServiceImpl implements PaymentService {
         return switch (type) {
             case "DEPOSIT" -> "Tiền cọc";
             case "MONTHLY_RENT" -> "Tiền thuê tháng";
-            default -> "Hóa đơn";
+            case "DEPOSIT_REFUND" -> "Hoàn cọc";
+            case "UTILITY" -> "Phí dịch vụ";
+            case "MAINTENANCE" -> "Phí bảo trì";
+            default -> "Hoá đơn";
         };
     }
 

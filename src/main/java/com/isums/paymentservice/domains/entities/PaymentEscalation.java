@@ -1,5 +1,7 @@
 package com.isums.paymentservice.domains.entities;
 
+import com.isums.common.i18n.TranslationMap;
+import com.isums.common.i18n.TranslationMapConverter;
 import com.isums.paymentservice.domains.enums.ActionType;
 import com.isums.paymentservice.domains.enums.EscalationType;
 import jakarta.persistence.*;
@@ -56,6 +58,10 @@ public class PaymentEscalation {
     private Instant executedAt;
 
     private String note;
+
+    @Column(name = "note_translations", columnDefinition = "text")
+    @Convert(converter = TranslationMapConverter.class)
+    private TranslationMap noteTranslations;
 
     @Column(name = "created_at")
     @CreationTimestamp

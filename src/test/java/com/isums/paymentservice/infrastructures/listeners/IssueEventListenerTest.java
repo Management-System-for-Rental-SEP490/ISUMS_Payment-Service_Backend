@@ -41,7 +41,6 @@ class IssueEventListenerTest {
 
     private final ConsumerRecord<String, String> rec =
             new ConsumerRecord<>("quote-invoice-create", 0, 0L, "k", "v");
-
     private QuoteInvoiceCreateEvent event() {
         return QuoteInvoiceCreateEvent.builder()
                 .quoteId(UUID.randomUUID()).issueId(UUID.randomUUID())
@@ -106,4 +105,5 @@ class IssueEventListenerTest {
                 .isInstanceOf(RuntimeException.class);
         verify(ack, never()).acknowledge();
     }
+
 }

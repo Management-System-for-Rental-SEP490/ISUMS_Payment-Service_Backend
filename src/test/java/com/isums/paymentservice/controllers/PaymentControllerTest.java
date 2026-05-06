@@ -105,11 +105,11 @@ class PaymentControllerTest {
     @DisplayName("GET /invoices/{id} returns detail on happy path")
     void getInvoiceById() throws Exception {
         UUID id = UUID.randomUUID();
-        InvoiceDetailDto dto = new InvoiceDetailDto(id, UUID.randomUUID(),
+        InvoiceDetailDto dto = new InvoiceDetailDto(id, UUID.randomUUID(), null,
                 InvoiceType.MONTHLY_RENT, "2026-04", 500L, 0L, 0L, 500L,
                 InvoiceStatus.UNPAID, Instant.now(), null, Instant.now(),
                 UUID.randomUUID(), "Alice", "a@b.com", "0900",
-                UUID.randomUUID(), "H1", "addr", List.of());
+                UUID.randomUUID(), "H1", "addr", List.of(), null, List.of());
         when(paymentService.getInvoiceById(id, keycloakId)).thenReturn(dto);
 
         mvc.perform(get("/api/payments/invoices/{id}", id))
