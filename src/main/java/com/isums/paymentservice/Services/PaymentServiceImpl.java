@@ -145,10 +145,11 @@ public class PaymentServiceImpl implements PaymentService {
                 // as the user key (its tables are keyed by JWT.sub, not
                 // our internal user UUID).
                 .invoiceIds(String.format(
-                        "{\"planCode\":\"%s\",\"durationDays\":%d,\"planId\":\"%s\",\"keycloakId\":\"%s\"}",
+                        "{\"planCode\":\"%s\",\"durationDays\":%d,\"planId\":\"%s\",\"keycloakId\":\"%s\",\"houseId\":\"%s\"}",
                         planCode, durationDays,
                         request.planId() != null ? request.planId() : "",
-                        keycloakId))
+                        keycloakId,
+                        request.houseId() != null ? request.houseId() : ""))
                 .build();
         paymentRepository.save(payment);
 
@@ -294,7 +295,38 @@ public class PaymentServiceImpl implements PaymentService {
         List<RentalInvoice> invoices = houseId != null
                 ? invoiceRepository.findByTenantIdAndHouseIdOrderByDueDateAsc(tenantId, houseId)
                 : invoiceRepository.findByTenantIdOrderByDueDateAsc(tenantId);
-        return invoiceMapper.toDtos(invoices);
+
+        java.util.Set<UUID> closedContractIds = new java.util.HashSet<>();
+        java.util.Set<UUID> activeContractIds = new java.util.HashSet<>();
+        List<RentalInvoice> filtered = new java.util.ArrayList<>(invoices.size());
+        for (RentalInvoice inv : invoices) {
+            UUID cid = inv.getContractId();
+            if (cid == null) {
+                filtered.add(inv);
+                continue;
+            }
+            if (closedContractIds.contains(cid)) {
+                if (inv.getStatus() == InvoiceStatus.UNPAID || inv.getStatus() == InvoiceStatus.OVERDUE) {
+                    continue;
+                }
+                filtered.add(inv);
+                continue;
+            }
+            if (activeContractIds.contains(cid)) {
+                filtered.add(inv);
+                continue;
+            }
+            if (isContractClosedByRelocation(cid)) {
+                closedContractIds.add(cid);
+                if (inv.getStatus() == InvoiceStatus.UNPAID || inv.getStatus() == InvoiceStatus.OVERDUE) {
+                    continue;
+                }
+            } else {
+                activeContractIds.add(cid);
+            }
+            filtered.add(inv);
+        }
+        return invoiceMapper.toDtos(filtered);
     }
 
     @Override
@@ -417,6 +449,10 @@ public class PaymentServiceImpl implements PaymentService {
                 throw new IllegalStateException(
                         "Invoice " + inv.getId() + " Not in UNPAID status. Currently: " + inv.getStatus());
             }
+            if (isContractClosedByRelocation(inv.getContractId())) {
+                throw new IllegalStateException(
+                        "Invoice " + inv.getId() + " thuộc hợp đồng đã được thay thế qua đổi nhà — không thể thanh toán. Vui lòng dùng hợp đồng mới.");
+            }
         }
 
         long totalAmount = invoices.stream().mapToLong(RentalInvoice::getTotalAmount).sum();
@@ -446,6 +482,19 @@ public class PaymentServiceImpl implements PaymentService {
                 payment.getId(), invoiceIdsJson, totalAmount);
 
         return buildVnpayUrl(payment, totalAmount, request, extractIp(httpRequest));
+    }
+
+    private boolean isContractClosedByRelocation(UUID contractId) {
+        if (contractId == null) return false;
+        return invoiceRepository
+                .findByContractIdAndType(contractId, InvoiceType.DEPOSIT)
+                .map(deposit -> {
+                    InvoiceStatus s = deposit.getStatus();
+                    return s == InvoiceStatus.TRANSFERRED
+                            || s == InvoiceStatus.FORFEITED
+                            || s == InvoiceStatus.REFUNDED;
+                })
+                .orElse(false);
     }
 
     private String createQuotePaymentLink(CreatePaymentRequest request,
@@ -526,19 +575,22 @@ public class PaymentServiceImpl implements PaymentService {
             String planCode  = parseMetadataString(payment.getInvoiceIds(), "planCode", "");
             String planId    = parseMetadataString(payment.getInvoiceIds(), "planId",   "");
             String keycloakId = parseMetadataString(payment.getInvoiceIds(), "keycloakId", "");
+            String houseId    = parseMetadataString(payment.getInvoiceIds(), "houseId",   "");
 
-            // Cross-service user key — Notification-Service stores its
-            // notification_subscriptions / preferences rows keyed by JWT
-            // sub (Keycloak ID), so the listener must receive that. Fall
-            // back to the internal payerUserId only for legacy intents
-            // created before keycloakId was persisted in invoice_ids JSON.
             String eventUserId = !keycloakId.isBlank()
                     ? keycloakId
                     : payment.getPayerUserId().toString();
 
+            if (houseId.isBlank()) {
+                log.error("[Payment] Subscription payment {} has no houseId metadata — cannot activate per-house PREMIUM. Skipping event emission.",
+                        payment.getId());
+                return;
+            }
+
             Map<String, Object> event = new HashMap<>();
             event.put("intentId",     payment.getId().toString());
             event.put("userId",       eventUserId);
+            event.put("houseId",      houseId);
             event.put("purpose",      "NOTIFICATION_PREMIUM");
             event.put("durationDays", durationDays);
             event.put("planCode",     planCode);
@@ -551,8 +603,8 @@ public class PaymentServiceImpl implements PaymentService {
                     payment.getPaidAt() != null ? payment.getPaidAt().toString()
                                                  : Instant.now().toString());
             kafka.send("payment.subscription-activated", eventUserId, event);
-            log.info("[Payment] subscription-activated emitted keycloakUserId={} internalPayerId={} plan={} duration={}d amount={}",
-                    eventUserId, payment.getPayerUserId(), planCode, durationDays, payment.getAmount());
+            log.info("[Payment] subscription-activated emitted keycloakUserId={} houseId={} internalPayerId={} plan={} duration={}d amount={}",
+                    eventUserId, houseId, payment.getPayerUserId(), planCode, durationDays, payment.getAmount());
         } catch (Exception e) {
             log.error("[Payment] handlePostSubscriptionPayment failed paymentId={}: {}",
                     payment.getId(), e.getMessage(), e);
@@ -632,8 +684,10 @@ public class PaymentServiceImpl implements PaymentService {
                         .invoiceType(invoice.getType())
                         .txnNo(txnNo)
                         .paidAt(invoice.getPaidAt())
+                        .relocationSourceContractId(invoice.getRelocationSourceContractId())
                         .build());
-                log.info("[Payment] deposit-paid-topic sent invoiceId={}", invoice.getId());
+                log.info("[Payment] deposit-paid-topic sent invoiceId={} relocationSource={}",
+                        invoice.getId(), invoice.getRelocationSourceContractId());
             }
         } catch (Exception e) {
             log.error("[Payment] handlePostPayment failed invoiceId={}: {}",

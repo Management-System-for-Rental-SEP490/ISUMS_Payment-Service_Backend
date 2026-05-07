@@ -11,6 +11,8 @@ import com.isums.paymentservice.domains.events.*;
 import com.isums.paymentservice.infrastructures.repositories.PaymentRepository;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
+import common.kafkas.IdempotencyService;
+import common.kafkas.KafkaListenerHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -41,6 +43,8 @@ public class ContractEventListener {
     private final PaymentTokenService paymentTokenService;
     private final KafkaTemplate<String, Object> kafka;
     private final ObjectMapper objectMapper;
+    private final IdempotencyService idempotencyService;
+    private final KafkaListenerHelper kafkaHelper;
 
     @Value("${app.payment.outsystem-url:https://outsystem.isums.pro/payments}")
     private String outsystemPaymentUrl;
@@ -92,6 +96,15 @@ public class ContractEventListener {
             boolean isRelocation = event.getRelocationSourceContractId() != null
                     || transferred > 0;
 
+            if (event.getRelocationSourceContractId() != null) {
+                int orphanCancelled = cancelOpenRentInvoices(event.getRelocationSourceContractId());
+                if (orphanCancelled > 0) {
+                    log.warn("[Payment] ContractCompleted: cancelled {} orphan rent invoices on oldContractId={} "
+                                    + "(safety net — contract.replaced consumer may have skipped)",
+                            orphanCancelled, event.getRelocationSourceContractId());
+                }
+            }
+
             if (originalDeposit <= 0 && !isRelocation) {
                 RentalInvoice monthlyInvoice = createFirstRentInvoice(
                         event.getContractId(),
@@ -127,9 +140,11 @@ public class ContractEventListener {
 
             boolean fullCoverage = isRelocation && billable == 0 && originalDeposit > 0;
             InvoiceStatus depositStatus = fullCoverage ? InvoiceStatus.PAID : InvoiceStatus.UNPAID;
-            Long depositInvoiceTotal = isRelocation ? originalDeposit
+            Long depositInvoiceTotal = fullCoverage
+                    ? originalDeposit
                     : (billable > 0 ? billable : originalDeposit);
-            Long depositInvoiceBase = isRelocation ? originalDeposit
+            Long depositInvoiceBase = fullCoverage
+                    ? originalDeposit
                     : (billable > 0 ? billable : originalDeposit);
 
             RentalInvoice depositInvoice = RentalInvoice.builder()
@@ -138,6 +153,7 @@ public class ContractEventListener {
                     .houseId(event.getHouseId())
                     .type(InvoiceType.DEPOSIT)
                     .periodKey("DEPOSIT")
+                    .relocationSourceContractId(event.getRelocationSourceContractId())
                     .baseAmount(depositInvoiceBase)
                     .serviceAmount(0L)
                     .penaltyAmount(0L)
@@ -188,19 +204,28 @@ public class ContractEventListener {
 
             if (isRelocation && billable > 0
                     && event.getTenantEmail() != null && !event.getTenantEmail().isBlank()) {
+                String topupToken = paymentTokenService.generateToken(depositInvoice.getId(), event.getTenantId());
+                String topupPaymentUrl = outsystemPaymentUrl
+                        + "?invoiceId=" + depositInvoice.getId()
+                        + "&token=" + topupToken;
+                String appDeepLink = "isumstenant://contracts/" + event.getContractId();
+
+                Map<String, Object> params = new HashMap<>();
+                params.put("contractId", event.getContractId().toString().substring(0, 8).toUpperCase());
+                params.put("originalAmount", formatVnd(originalDeposit));
+                params.put("transferredAmount", formatVnd(transferred));
+                params.put("additionalAmount", formatVnd(billable));
+                params.put("dueDate", DMY.format(depositDueDate));
+                params.put("paymentUrl", topupPaymentUrl);
+                params.put("appDeepLink", appDeepLink);
+
                 kafka.send("notification-email", SendEmailEvent.builder()
                         .to(event.getTenantEmail())
                         .templateCode("CONTRACT_DEPOSIT_INCREASE")
-                        .params(Map.of(
-                                "contractId", event.getContractId().toString().substring(0, 8).toUpperCase(),
-                                "originalAmount", formatVnd(originalDeposit),
-                                "transferredAmount", formatVnd(transferred),
-                                "additionalAmount", formatVnd(billable),
-                                "dueDate", DMY.format(depositDueDate)
-                        ))
+                        .params(params)
                         .build());
-                log.info("[Payment] Deposit increase email sent contractId={} additional={}",
-                        event.getContractId(), billable);
+                log.info("[Payment] Deposit increase email sent contractId={} additional={} paymentUrl={}",
+                        event.getContractId(), billable, topupPaymentUrl);
                 ack.acknowledge();
                 return;
             }
@@ -350,7 +375,15 @@ public class ContractEventListener {
 
     @KafkaListener(topics = "deposit-paid-topic", groupId = "payment-group")
     public void handleDepositPaid(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        String messageId = kafkaHelper.extractMessageId(record);
+        kafkaHelper.setupMDC(record, messageId);
         try {
+            if (idempotencyService.isDuplicate(messageId)) {
+                log.warn("[Payment] Duplicate deposit-paid skipped messageId={}", messageId);
+                ack.acknowledge();
+                return;
+            }
+
             DepositPaidEvent event = objectMapper.readValue(record.value(), DepositPaidEvent.class);
 
             log.info("[Payment] DepositPaid contractId={} tenantId={}",
@@ -362,6 +395,7 @@ public class ContractEventListener {
 
             if (depositInvoice == null || depositInvoice.getRentAmount() == null) {
                 log.warn("[Payment] No deposit context contractId={}, skip", event.contractId());
+                idempotencyService.markProcessed(messageId);
                 ack.acknowledge();
                 return;
             }
@@ -379,9 +413,24 @@ public class ContractEventListener {
                     depositInvoice.getIsNewAccount(),
                     firstMonthCredit,
                     oldContractId);
+
             if (monthlyInvoice == null) {
-                ack.acknowledge();
-                return;
+                Instant firstRentDue = calcFirstRentDue(
+                        depositInvoice.getContractStartAt(), depositInvoice.getPayDate());
+                String periodKey = "RENT_" + firstRentDue.atZone(VN)
+                        .format(DateTimeFormatter.ofPattern("yyyyMM"));
+                monthlyInvoice = invoiceRepository
+                        .findByContractIdAndPeriodKey(event.contractId(), periodKey)
+                        .orElse(null);
+                if (monthlyInvoice == null) {
+                    log.error("[Payment] handleDepositPaid: MONTHLY_RENT lookup failed contractId={} periodKey={} — activation chain broken",
+                            event.contractId(), periodKey);
+                    idempotencyService.markProcessed(messageId);
+                    ack.acknowledge();
+                    return;
+                }
+                log.info("[Payment] handleDepositPaid: re-emitting enriched event for existing MONTHLY_RENT contractId={} invoiceId={}",
+                        event.contractId(), monthlyInvoice.getId());
             }
 
             publishTenantActivation(
@@ -393,16 +442,19 @@ public class ContractEventListener {
                     depositInvoice.getTenantEmail(),
                     depositInvoice.getIsNewAccount());
 
-            log.info("[Payment] MONTHLY_RENT created + enriched event sent contractId={}",
+            log.info("[Payment] MONTHLY_RENT enriched event sent contractId={}",
                     event.contractId());
+            idempotencyService.markProcessed(messageId);
             ack.acknowledge();
 
         } catch (JacksonException e) {
-            log.error("[Payment] Deserialize deposit-paid failed: {}", e.getMessage());
+            log.error("[Payment] Deserialize deposit-paid failed messageId={}: {}", messageId, e.getMessage());
             ack.acknowledge();
         } catch (Exception e) {
-            log.error("[Payment] handleDepositPaid failed, will retry: {}", e.getMessage(), e);
+            log.error("[Payment] handleDepositPaid failed messageId={}, will retry: {}", messageId, e.getMessage(), e);
             throw new RuntimeException(e);
+        } finally {
+            kafkaHelper.clearMDC();
         }
     }
 

@@ -24,6 +24,8 @@ import jakarta.validation.constraints.Min;
  */
 public record CreateSubscriptionPaymentRequest(
         java.util.UUID planId,
+        @jakarta.validation.constraints.NotNull(message = "houseId is required")
+        java.util.UUID houseId,
         @Min(value = 1,  message = "months must be >= 1")
         @Max(value = 24, message = "months must be <= 24")
         Integer months,

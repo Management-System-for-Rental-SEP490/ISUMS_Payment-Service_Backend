@@ -9,6 +9,8 @@ import com.isums.paymentservice.domains.events.DepositRefundConfirmedEvent;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
+import common.kafkas.IdempotencyService;
+import common.kafkas.KafkaListenerHelper;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -47,12 +49,16 @@ class ContractEventListenerTest {
     @Mock private KafkaTemplate<String, Object> kafka;
     @Mock private ObjectMapper objectMapper;
     @Mock private Acknowledgment ack;
+    @Mock private IdempotencyService idempotencyService;
+    @Mock private KafkaListenerHelper kafkaHelper;
 
     @InjectMocks private ContractEventListener listener;
 
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(listener, "outsystemPaymentUrl", "https://out.example/payments");
+        org.mockito.Mockito.lenient()
+                .when(kafkaHelper.extractMessageId(any())).thenReturn("test-msg-id");
     }
 
     @Nested
@@ -230,28 +236,54 @@ class ContractEventListenerTest {
         }
 
         @Test
-        @DisplayName("idempotent when MONTHLY_RENT already exists")
+        @DisplayName("re-emits enriched event when MONTHLY_RENT already exists (Kafka redelivery safety)")
         void alreadyExists() throws Exception {
             UUID contractId = UUID.randomUUID();
+            UUID tenantId = UUID.randomUUID();
+            UUID houseId = UUID.randomUUID();
             DepositPaidEvent evt = DepositPaidEvent.builder()
-                    .contractId(contractId).tenantId(UUID.randomUUID()).houseId(UUID.randomUUID())
+                    .contractId(contractId).tenantId(tenantId).houseId(houseId)
                     .invoiceId(UUID.randomUUID()).amount(1L).txnNo("t").paidAt(Instant.now())
                     .invoiceType(InvoiceType.DEPOSIT).build();
             RentalInvoice depositInv = RentalInvoice.builder()
                     .contractId(contractId).type(InvoiceType.DEPOSIT)
                     .periodKey("DEPOSIT").baseAmount(1L).totalAmount(1L)
                     .rentAmount(100L).payDate(5).contractStartAt(Instant.now())
+                    .tenantEmail("alice@example.com").isNewAccount(true)
                     .status(InvoiceStatus.PAID).dueDate(Instant.now()).build();
+            RentalInvoice existingMonthly = RentalInvoice.builder()
+                    .id(UUID.randomUUID()).contractId(contractId).tenantId(tenantId)
+                    .houseId(houseId).type(InvoiceType.MONTHLY_RENT)
+                    .totalAmount(100L).status(InvoiceStatus.UNPAID)
+                    .dueDate(Instant.now()).build();
 
             when(objectMapper.readValue("v", DepositPaidEvent.class)).thenReturn(evt);
             when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
                     .thenReturn(Optional.of(depositInv));
             when(invoiceRepository.existsByContractIdAndPeriodKey(eq(contractId), any(String.class)))
                     .thenReturn(true);
+            when(invoiceRepository.findByContractIdAndPeriodKey(eq(contractId), any(String.class)))
+                    .thenReturn(Optional.of(existingMonthly));
+            when(paymentTokenService.generateToken(any(), eq(tenantId))).thenReturn("tok-xyz");
 
             listener.handleDepositPaid(rec, ack);
 
             verify(invoiceRepository, never()).save(any());
+            verify(kafka).send(eq("deposit-paid-enriched-topic"), any());
+            verify(kafka).send(eq("map-user-to-house-topic"), any());
+            verify(idempotencyService).markProcessed("test-msg-id");
+            verify(ack).acknowledge();
+        }
+
+        @Test
+        @DisplayName("skips when message is already processed (Kafka redelivery dedup)")
+        void duplicateMessage() throws Exception {
+            when(idempotencyService.isDuplicate("test-msg-id")).thenReturn(true);
+
+            listener.handleDepositPaid(rec, ack);
+
+            verify(invoiceRepository, never()).findByContractIdAndType(any(), any());
+            verify(kafka, never()).send(any(String.class), any());
             verify(ack).acknowledge();
         }
 

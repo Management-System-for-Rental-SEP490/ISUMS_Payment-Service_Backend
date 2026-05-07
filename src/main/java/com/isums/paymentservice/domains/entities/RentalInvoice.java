@@ -95,6 +95,9 @@ public class RentalInvoice {
     @Column(name = "overdue_days")
     private Integer overdueDays;
 
+    @Column(name = "relocation_source_contract_id")
+    private UUID relocationSourceContractId;
+
     @Column(name = "power_cut_warned_at")
     private Instant powerCutWarnedAt;
 
