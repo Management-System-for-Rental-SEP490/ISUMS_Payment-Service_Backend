@@ -33,21 +33,21 @@ public class PaymentTokenService {
 
     public void validateToken(String token, UUID invoiceId) {
         if (token == null || token.isBlank())
-            throw new IllegalArgumentException("Token thanh toán không được để trống.");
+            throw new IllegalArgumentException("Payment token must not be blank.");
 
         String value = redis.opsForValue().get(PREFIX + token);
         if (value == null)
-            throw new IllegalArgumentException("Link thanh toán đã hết hạn. Vui lòng liên hệ chủ nhà để nhận link mới.");
+            throw new IllegalArgumentException("Payment link has expired. Please contact the landlord for a new link.");
 
         String[] parts = value.split(":");
         if (parts.length != 2)
-            throw new IllegalArgumentException("Token không hợp lệ.");
+            throw new IllegalArgumentException("Token is invalid.");
 
         UUID tokenInvoiceId = UUID.fromString(parts[0]);
         UUID tenantId       = UUID.fromString(parts[1]);
 
         if (!tokenInvoiceId.equals(invoiceId))
-            throw new IllegalArgumentException("Token không khớp với hóa đơn.");
+            throw new IllegalArgumentException("Token does not match the invoice.");
 
     }
 

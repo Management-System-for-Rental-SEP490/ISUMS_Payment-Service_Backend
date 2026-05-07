@@ -23,6 +23,7 @@ public record DepositPaidEvent(
         Boolean isNewAccount,
         String firstRentPaymentUrl,
         Long firstRentAmount,
-        Instant firstRentDueDate
+        Instant firstRentDueDate,
+        UUID relocationSourceContractId
 ) {
 }

@@ -19,7 +19,7 @@ public class UserGrpcService {
         try {
             return userStub.getUserById(GetUserByIdRequest.newBuilder().setUserId(tenantId.toString()).build()).getEmail();
         } catch (Exception e) {
-            throw new IllegalStateException("Không lấy được email tenant: " + tenantId);
+            throw new IllegalStateException("Failed to fetch tenant email: " + tenantId);
         }
     }
 
@@ -28,3 +28,4 @@ public class UserGrpcService {
         return userStub.getUserIdAndRoleByKeyCloakId(req);
     }
 }
+

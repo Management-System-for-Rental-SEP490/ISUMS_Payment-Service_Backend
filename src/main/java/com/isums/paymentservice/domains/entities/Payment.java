@@ -1,5 +1,7 @@
 package com.isums.paymentservice.domains.entities;
 
+import com.isums.common.i18n.TranslationMap;
+import com.isums.common.i18n.TranslationMapConverter;
 import com.isums.paymentservice.domains.enums.PaymentMethod;
 import com.isums.paymentservice.domains.enums.PaymentStatus;
 import com.isums.paymentservice.domains.enums.ReferenceType;
@@ -60,13 +62,17 @@ public class Payment {
     @Column(name = "status", nullable = false)
     private PaymentStatus status;
 
-    @Column(name = "gateway_txn_id", unique = true)
+    @Column(name = "gateway_txn_id")
     private String gatewayTxnId;
 
     @Column(name = "gateway_response", columnDefinition = "text")
     private String gatewayResponse;
 
     private String note;
+
+    @Column(name = "note_translations", columnDefinition = "text")
+    @Convert(converter = TranslationMapConverter.class)
+    private TranslationMap noteTranslations;
 
     @Column(name = "paid_at")
     private Instant paidAt;

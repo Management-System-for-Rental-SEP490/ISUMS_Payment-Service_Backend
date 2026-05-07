@@ -1,5 +1,7 @@
 package com.isums.paymentservice.domains.entities;
 
+import com.isums.common.i18n.TranslationMap;
+import com.isums.common.i18n.TranslationMapConverter;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -43,6 +45,10 @@ public class InvoicePenaltyItem {
     private long penaltyAmount;
 
     private String description;
+
+    @Column(name = "description_translations", columnDefinition = "text")
+    @Convert(converter = TranslationMapConverter.class)
+    private TranslationMap descriptionTranslations;
 
     @CreationTimestamp
     @Column(name = "created_at")

@@ -12,7 +12,7 @@ public record CreatePaymentRequest(
         String locale
 ) {
     @JsonIgnore
-    @AssertTrue(message = "Phải cung cấp invoiceIds hoặc quoteId, không cả hai")
+    @AssertTrue(message = "Must supply either invoiceIds or quoteId, not both")
     public boolean isValidPaymentTarget() {
         boolean hasInvoices = invoiceIds != null && !invoiceIds.isEmpty();
         boolean hasQuote    = quoteId != null && !quoteId.isBlank();

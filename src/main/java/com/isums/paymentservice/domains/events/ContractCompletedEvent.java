@@ -20,10 +20,14 @@ public class ContractCompletedEvent {
     private UUID landlordId;
     private Boolean isNewAccount;
     private Long depositAmount;
+    private Long originalDepositAmount;
+    private Long transferredDepositAmount;
+    private UUID relocationSourceContractId;
     private Long rentAmount;
     private Integer payDate;
     private Instant startAt;
     private Instant endAt;
     private Instant completedAt;
+    private Instant depositDueAt;
     private String signedPdfUrl;
 }

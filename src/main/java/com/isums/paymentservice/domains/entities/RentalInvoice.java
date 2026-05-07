@@ -39,6 +39,9 @@ public class RentalInvoice {
     @Column(name = "house_id", nullable = false)
     private UUID houseId;
 
+    @Column(name = "quote_id")
+    private UUID quoteId;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private InvoiceType type;
@@ -82,6 +85,24 @@ public class RentalInvoice {
 
     @Column(name = "paid_at")
     private Instant paidAt;
+
+    @Column(name = "refund_payment_method", length = 20)
+    private String refundPaymentMethod;
+
+    @Column(name = "refund_note", columnDefinition = "text")
+    private String refundNote;
+
+    @Column(name = "overdue_days")
+    private Integer overdueDays;
+
+    @Column(name = "relocation_source_contract_id")
+    private UUID relocationSourceContractId;
+
+    @Column(name = "power_cut_warned_at")
+    private Instant powerCutWarnedAt;
+
+    @Column(name = "power_cut_confirmed_at")
+    private Instant powerCutConfirmedAt;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

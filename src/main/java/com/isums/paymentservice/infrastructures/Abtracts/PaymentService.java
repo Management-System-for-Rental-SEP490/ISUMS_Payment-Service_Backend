@@ -11,6 +11,16 @@ public interface PaymentService {
 
     String createPaymentVNPayLink(CreatePaymentRequest request, HttpServletRequest httpRequest, String keycloakId);
 
+    /**
+     * Create a VNPay link for the Notification-Service PREMIUM
+     * subscription. After IPN success the service emits Kafka topic
+     * {@code payment.subscription-activated}; Notification-Service
+     * consumes it and flips the user's tier to PREMIUM.
+     */
+    String createSubscriptionPaymentLink(CreateSubscriptionPaymentRequest request,
+                                           HttpServletRequest httpRequest,
+                                           String keycloakId);
+
     VNPayIpnResponse handleIpn(VNPayIpnRequest request);
 
     void resendPaymentNotification(@PathVariable UUID invoiceId);
@@ -22,4 +32,10 @@ public interface PaymentService {
     List<InvoiceDto> getMyInvoices(String keycloakId, UUID houseId);
 
     InvoiceDetailDto getInvoiceById(UUID invoiceId, String keycloakId);
+    
+    List<PaymentMethodOptionDto> getAvailablePaymentMethods();
+
+    void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req);
+
+    String handleReturn(VNPayIpnRequest request);
 }
