@@ -53,6 +53,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final IssueGrpcClient issueGrpcClient;
     private final HouseGrpcClient houseGrpcClient;
     private final com.isums.paymentservice.infrastructures.client.SubscriptionPlanClient planClient;
+    private final com.isums.paymentservice.infrastructures.repositories.LatePaymentActionLogRepository latePaymentLogRepo;
 
     private static final DateTimeFormatter VNPAY_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final DateTimeFormatter DMY = DateTimeFormatter.ofPattern("dd/MM/yyyy")
@@ -163,6 +164,7 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
+    @org.springframework.cache.annotation.CacheEvict(value = "finance-dashboard", allEntries = true)
     public VNPayIpnResponse handleIpn(VNPayIpnRequest ipn) {
         try {
             if (!isValidSignature(ipn)) {
@@ -400,6 +402,7 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Transactional
+    @org.springframework.cache.annotation.CacheEvict(value = "finance-dashboard", allEntries = true)
     public void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req) {
         RentalInvoice invoice = invoiceRepository.findById(invoiceId)
                 .orElseThrow(() -> new EntityNotFoundException("Invoice not found"));
@@ -423,7 +426,10 @@ public class PaymentServiceImpl implements PaymentService {
                         .contractId(invoice.getContractId())
                         .houseId(invoice.getHouseId())
                         .tenantId(invoice.getTenantId())
+                        .tenantEmail(invoice.getTenantEmail())
                         .refundAmount(invoice.getTotalAmount())
+                        .paymentMethod(invoice.getRefundPaymentMethod())
+                        .note(invoice.getRefundNote())
                         .paidAt(invoice.getPaidAt())
                         .messageId(UUID.randomUUID().toString())
                         .build());
@@ -556,6 +562,23 @@ public class PaymentServiceImpl implements PaymentService {
                                 .messageId(UUID.randomUUID().toString())
                                 .build());
 
+                boolean hadPowerCut = latePaymentLogRepo.existsByInvoiceIdAndActionType(
+                        invoice.getId(), com.isums.paymentservice.domains.enums.LatePaymentAction.POWER_CUT_REQUEST);
+                if (hadPowerCut) {
+                    kafka.send("payment.power-restore-requested",
+                            invoice.getContractId().toString(),
+                            PowerRestoreRequestEvent.builder()
+                                    .invoiceId(invoice.getId())
+                                    .contractId(invoice.getContractId())
+                                    .houseId(invoice.getHouseId())
+                                    .tenantId(invoice.getTenantId())
+                                    .reason("PAYMENT_RECEIVED")
+                                    .messageId(UUID.randomUUID().toString())
+                                    .build());
+                    log.info("[Payment] Power restore requested invoiceId={} houseId={}",
+                            invoice.getId(), invoice.getHouseId());
+                }
+
                 invoice.setPaidAt(now);
                 invoiceRepository.save(invoice);
                 handlePostPayment(invoice, txnNo);
@@ -669,10 +692,11 @@ public class PaymentServiceImpl implements PaymentService {
                     .invoiceType(invoice.getType())
                     .txnNo(txnNo)
                     .paidAt(invoice.getPaidAt())
+                    .tenantEmail(invoice.getTenantEmail())
                     .build());
 
-            log.info("[Payment] payment-paid-topic sent invoiceId={} type={}",
-                    invoice.getId(), invoice.getType());
+            log.info("[Payment] payment-paid-topic sent invoiceId={} type={} tenantEmail={}",
+                    invoice.getId(), invoice.getType(), invoice.getTenantEmail());
 
             if (invoice.getType() == InvoiceType.DEPOSIT) {
                 kafka.send("deposit-paid-topic", DepositPaidEvent.builder()
@@ -684,6 +708,7 @@ public class PaymentServiceImpl implements PaymentService {
                         .invoiceType(invoice.getType())
                         .txnNo(txnNo)
                         .paidAt(invoice.getPaidAt())
+                        .tenantEmail(invoice.getTenantEmail())
                         .relocationSourceContractId(invoice.getRelocationSourceContractId())
                         .build());
                 log.info("[Payment] deposit-paid-topic sent invoiceId={} relocationSource={}",

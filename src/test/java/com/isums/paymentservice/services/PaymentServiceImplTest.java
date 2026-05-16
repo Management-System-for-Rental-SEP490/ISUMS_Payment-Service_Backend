@@ -64,6 +64,7 @@ class PaymentServiceImplTest {
     @Mock private IssueGrpcClient issueGrpcClient;
     @Mock private HouseGrpcClient houseGrpcClient;
     @Mock private HttpServletRequest httpRequest;
+    @Mock private com.isums.paymentservice.infrastructures.repositories.LatePaymentActionLogRepository latePaymentLogRepo;
 
     @InjectMocks private PaymentServiceImpl service;
 
@@ -490,7 +491,7 @@ class PaymentServiceImplTest {
         }
 
         @Test
-        @DisplayName("publishes quote-payment-completed when ISSUE invoice is paid through invoice flow")
+        @DisplayName("ISSUE invoice paid via invoice flow marks PAID and emits payment-paid-topic")
         void issueInvoiceSuccessPublishesQuoteCompletion() {
             when(vnPayProperties.getHashSecret()).thenReturn(HASH_SECRET);
             UUID paymentId = UUID.randomUUID();
@@ -513,7 +514,6 @@ class PaymentServiceImplTest {
             assertThat(res.getRspCode()).isEqualTo("00");
             assertThat(inv.getStatus()).isEqualTo(InvoiceStatus.PAID);
             verify(kafka).send(eq("payment-paid-topic"), any());
-            verify(kafka).send(eq("quote-payment-completed"), any());
         }
 
         @Test
@@ -827,7 +827,7 @@ class PaymentServiceImplTest {
             assertThatThrownBy(() -> service.markDepositRefundPaid(invoiceId,
                     new MarkRefundPaidRequest(RefundPaymentMethod.BANK_TRANSFER, null)))
                     .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("hoàn cọc");
+                    .hasMessageContaining("deposit-refund");
         }
 
         @Test

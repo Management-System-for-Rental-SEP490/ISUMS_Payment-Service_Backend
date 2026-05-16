@@ -7,6 +7,7 @@ import com.isums.paymentservice.domains.events.ContractCompletedEvent;
 import com.isums.paymentservice.domains.events.DepositPaidEvent;
 import com.isums.paymentservice.domains.events.DepositRefundConfirmedEvent;
 import com.isums.paymentservice.domains.events.SendEmailEvent;
+import com.isums.paymentservice.infrastructures.grpcs.UserGrpcService;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
 import com.isums.paymentservice.services.PaymentTokenService;
 import common.kafkas.IdempotencyService;
@@ -51,6 +52,7 @@ class ContractEventListenerTest {
     @Mock private Acknowledgment ack;
     @Mock private IdempotencyService idempotencyService;
     @Mock private KafkaListenerHelper kafkaHelper;
+    @Mock private UserGrpcService userGrpcService;
 
     @InjectMocks private ContractEventListener listener;
 
@@ -123,18 +125,19 @@ class ContractEventListenerTest {
         }
 
         @Test
-        @DisplayName("skips saveAll when depositAmount is null or zero")
+        @DisplayName("zero deposit branches to first-rent-only path (no DEPOSIT saveAll)")
         void zeroDeposit() throws Exception {
             ContractCompletedEvent evt = event(0L);
             when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
             when(invoiceRepository.existsByContractIdAndPeriodKey(evt.getContractId(), "DEPOSIT"))
                     .thenReturn(false);
+            when(invoiceRepository.save(any(RentalInvoice.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-zero");
 
             listener.handleContractCompleted(rec, ack);
 
-            ArgumentCaptor<List<RentalInvoice>> cap = ArgumentCaptor.forClass(List.class);
-            verify(invoiceRepository).saveAll(cap.capture());
-            org.assertj.core.api.Assertions.assertThat(cap.getValue()).isEmpty();
+            verify(invoiceRepository, never()).saveAll(any());
             verify(ack).acknowledge();
         }
 
@@ -330,6 +333,30 @@ class ContractEventListenerTest {
         }
 
         @Test
+        @DisplayName("falls back to user gRPC when event email missing")
+        void fallbackEmail() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            UUID tenantId = UUID.randomUUID();
+            DepositRefundConfirmedEvent evt = DepositRefundConfirmedEvent.builder()
+                    .contractId(contractId).tenantId(tenantId).houseId(UUID.randomUUID())
+                    .refundAmount(2_000_000L).messageId("m1").build();
+
+            when(objectMapper.readValue("v", DepositRefundConfirmedEvent.class)).thenReturn(evt);
+            when(invoiceRepository.existsByContractIdAndPeriodKey(contractId, "DEPOSIT_REFUND"))
+                    .thenReturn(false);
+            when(userGrpcService.getTenantEmail(tenantId)).thenReturn("alice@example.com");
+
+            listener.handleDepositRefundConfirmed(rec, ack);
+
+            ArgumentCaptor<RentalInvoice> cap = ArgumentCaptor.forClass(RentalInvoice.class);
+            verify(invoiceRepository).save(cap.capture());
+            org.assertj.core.api.Assertions.assertThat(cap.getValue().getTenantEmail())
+                    .isEqualTo("alice@example.com");
+            verify(kafka).send(eq("notification-email"), any(SendEmailEvent.class));
+            verify(ack).acknowledge();
+        }
+
+        @Test
         @DisplayName("idempotent when DEPOSIT_REFUND already exists")
         void idempotent() throws Exception {
             UUID contractId = UUID.randomUUID();
@@ -356,6 +383,104 @@ class ContractEventListenerTest {
             assertThatThrownBy(() -> listener.handleDepositRefundConfirmed(rec, ack))
                     .isInstanceOf(RuntimeException.class);
             verify(ack, never()).acknowledge();
+        }
+    }
+
+    @Nested
+    @DisplayName("handleForceTermination")
+    class HandleForceTermination {
+
+        private final ConsumerRecord<String, String> rec = new ConsumerRecord<>(
+                "contract.force-terminated", 0, 0L, "k", "v");
+
+        private com.isums.paymentservice.domains.events.ForceTerminationEvent event(UUID contractId) {
+            return com.isums.paymentservice.domains.events.ForceTerminationEvent.builder()
+                    .contractId(contractId)
+                    .houseId(UUID.randomUUID())
+                    .tenantId(UUID.randomUUID())
+                    .reason("OVERDUE_PAYMENT_30_DAYS")
+                    .actorId(UUID.randomUUID())
+                    .terminatedAt(Instant.now())
+                    .messageId("ft-1")
+                    .build();
+        }
+
+        private RentalInvoice unpaid(UUID contractId, InvoiceType type, long amount) {
+            return RentalInvoice.builder()
+                    .id(UUID.randomUUID())
+                    .contractId(contractId)
+                    .tenantId(UUID.randomUUID())
+                    .houseId(UUID.randomUUID())
+                    .type(type)
+                    .periodKey("2026-04")
+                    .baseAmount(amount).serviceAmount(0L).penaltyAmount(0L)
+                    .totalAmount(amount)
+                    .status(InvoiceStatus.UNPAID)
+                    .dueDate(Instant.now())
+                    .build();
+        }
+
+        @Test
+        @DisplayName("forfeits all UNPAID/OVERDUE rent invoices and PAID deposit on force-termination")
+        void forfeitsAll() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            RentalInvoice rent1 = unpaid(contractId, InvoiceType.MONTHLY_RENT, 5_000_000L);
+            RentalInvoice rent2 = unpaid(contractId, InvoiceType.MONTHLY_RENT, 5_000_000L);
+            rent2.setStatus(InvoiceStatus.OVERDUE);
+            RentalInvoice deposit = unpaid(contractId, InvoiceType.DEPOSIT, 10_000_000L);
+            deposit.setStatus(InvoiceStatus.PAID);
+
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events.ForceTerminationEvent.class))
+                    .thenReturn(event(contractId));
+            when(invoiceRepository.findByContractIdAndStatus(contractId, InvoiceStatus.UNPAID))
+                    .thenReturn(List.of(rent1));
+            when(invoiceRepository.findByContractIdAndStatus(contractId, InvoiceStatus.OVERDUE))
+                    .thenReturn(List.of(rent2));
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(deposit));
+
+            listener.handleForceTermination(rec, ack);
+
+            ArgumentCaptor<RentalInvoice> savedCaptor = ArgumentCaptor.forClass(RentalInvoice.class);
+            verify(invoiceRepository, org.mockito.Mockito.atLeast(3)).save(savedCaptor.capture());
+            org.assertj.core.api.Assertions.assertThat(savedCaptor.getAllValues())
+                    .extracting(RentalInvoice::getStatus)
+                    .containsOnly(InvoiceStatus.FORFEITED);
+            verify(ack).acknowledge();
+        }
+
+        @Test
+        @DisplayName("skips DEPOSIT in unpaid loop (deposit handled separately)")
+        void skipsDepositInUnpaidLoop() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            RentalInvoice unpaidDeposit = unpaid(contractId, InvoiceType.DEPOSIT, 10_000_000L);
+
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events.ForceTerminationEvent.class))
+                    .thenReturn(event(contractId));
+            when(invoiceRepository.findByContractIdAndStatus(contractId, InvoiceStatus.UNPAID))
+                    .thenReturn(List.of(unpaidDeposit));
+            when(invoiceRepository.findByContractIdAndStatus(contractId, InvoiceStatus.OVERDUE))
+                    .thenReturn(List.of());
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(unpaidDeposit));
+
+            listener.handleForceTermination(rec, ack);
+
+            verify(invoiceRepository, never()).save(unpaidDeposit);
+            verify(ack).acknowledge();
+        }
+
+        @Test
+        @DisplayName("acks on missing contractId")
+        void missingContractId() throws Exception {
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events.ForceTerminationEvent.class))
+                    .thenReturn(com.isums.paymentservice.domains.events.ForceTerminationEvent.builder()
+                            .messageId("m").build());
+
+            listener.handleForceTermination(rec, ack);
+
+            verify(invoiceRepository, never()).save(any());
+            verify(ack).acknowledge();
         }
     }
 }
