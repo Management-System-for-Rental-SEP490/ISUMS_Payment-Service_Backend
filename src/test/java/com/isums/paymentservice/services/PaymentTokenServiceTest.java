@@ -67,7 +67,7 @@ class PaymentTokenServiceTest {
         void tokenNull() {
             assertThatThrownBy(() -> service.validateToken(null, UUID.randomUUID()))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("trống");
+                    .hasMessageContaining("blank");
             verifyNoInteractions(redis);
         }
 
@@ -79,14 +79,14 @@ class PaymentTokenServiceTest {
         }
 
         @Test
-        @DisplayName("throws 'hết hạn' when Redis returns null (expired)")
+        @DisplayName("throws expired-link error when Redis returns null")
         void expired() {
             when(redis.opsForValue()).thenReturn(valueOps);
             when(valueOps.get("payment:token:t1")).thenReturn(null);
 
             assertThatThrownBy(() -> service.validateToken("t1", UUID.randomUUID()))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("hết hạn");
+                    .hasMessageContaining("expired");
         }
 
         @Test
@@ -97,7 +97,7 @@ class PaymentTokenServiceTest {
 
             assertThatThrownBy(() -> service.validateToken("t2", UUID.randomUUID()))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("không hợp lệ");
+                    .hasMessageContaining("invalid");
         }
 
         @Test
@@ -110,7 +110,7 @@ class PaymentTokenServiceTest {
 
             assertThatThrownBy(() -> service.validateToken("t3", UUID.randomUUID()))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("không khớp");
+                    .hasMessageContaining("does not match");
         }
 
         @Test

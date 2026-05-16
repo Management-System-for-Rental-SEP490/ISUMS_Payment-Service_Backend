@@ -147,16 +147,43 @@ class LatePaymentSchedulerTest {
         }
 
         @Test
-        @DisplayName("day 30: TERMINATION_INITIATED fires")
+        @DisplayName("day 30: TERMINATION_INITIATED fires + tenant final notice email")
         void day30() {
             RentalInvoice inv = overdue(30, 1_000_000L);
             when(invoiceRepo.findOverdueMonthlyRentInvoices(any())).thenReturn(List.of(inv));
             when(actionLogRepo.existsByInvoiceIdAndActionType(any(), any())).thenReturn(false);
+            when(actionLogRepo.existsByContractIdAndActionType(eq(inv.getContractId()), eq(LatePaymentAction.TERMINATION_INITIATED)))
+                    .thenReturn(false);
 
             scheduler.processLatePayments();
 
             verify(kafka).send(eq("payment.termination-requested"), anyString(), any(TerminationRequestedEvent.class));
+            ArgumentCaptor<SendEmailEvent> emailCaptor = ArgumentCaptor.forClass(SendEmailEvent.class);
+            verify(kafka, atLeast(1)).send(eq("notification-email"), emailCaptor.capture());
+            assertThat(emailCaptor.getAllValues())
+                    .anyMatch(e -> "late_payment_final_notice".equals(e.templateCode()));
             verifyActionLog(LatePaymentAction.TERMINATION_INITIATED);
+        }
+
+        @Test
+        @DisplayName("day 30: dedup multi-invoice — only one termination per contract")
+        void day30Dedup() {
+            UUID sharedContractId = UUID.randomUUID();
+            RentalInvoice inv1 = overdue(30, 1_000_000L);
+            RentalInvoice inv2 = overdue(30, 800_000L);
+            inv1.setContractId(sharedContractId);
+            inv2.setContractId(sharedContractId);
+
+            when(invoiceRepo.findOverdueMonthlyRentInvoices(any())).thenReturn(List.of(inv1, inv2));
+            when(actionLogRepo.existsByInvoiceIdAndActionType(any(), any())).thenReturn(false);
+            when(actionLogRepo.existsByContractIdAndActionType(eq(sharedContractId), eq(LatePaymentAction.TERMINATION_INITIATED)))
+                    .thenReturn(false)
+                    .thenReturn(true);
+
+            scheduler.processLatePayments();
+
+            verify(kafka, org.mockito.Mockito.times(1))
+                    .send(eq("payment.termination-requested"), anyString(), any(TerminationRequestedEvent.class));
         }
     }
 

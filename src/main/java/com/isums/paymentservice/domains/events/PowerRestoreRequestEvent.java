@@ -5,21 +5,17 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.Instant;
 import java.util.UUID;
 
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class DepositRefundPaidEvent {
+public class PowerRestoreRequestEvent {
+    private UUID invoiceId;
     private UUID contractId;
     private UUID houseId;
     private UUID tenantId;
-    private String tenantEmail;
-    private Long refundAmount;
-    private String paymentMethod;
-    private String note;
-    private Instant paidAt;
+    private String reason;
     private String messageId;
 }

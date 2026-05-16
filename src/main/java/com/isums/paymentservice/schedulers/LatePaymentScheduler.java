@@ -198,6 +198,13 @@ public class LatePaymentScheduler {
     }
 
     private void publishTerminationRequest(RentalInvoice invoice) {
+        if (actionLogRepo.existsByContractIdAndActionType(
+                invoice.getContractId(), LatePaymentAction.TERMINATION_INITIATED)) {
+            log.info("[LatePayment] Termination already requested for contractId={}, skip duplicate",
+                    invoice.getContractId());
+            return;
+        }
+
         kafka.send("payment.termination-requested",
                 invoice.getContractId().toString(),
                 TerminationRequestedEvent.builder()
@@ -208,6 +215,20 @@ public class LatePaymentScheduler {
                         .reason("OVERDUE_PAYMENT_30_DAYS")
                         .messageId(UUID.randomUUID().toString())
                         .build());
+
+        String tenantEmail = userGrpcService.getTenantEmail(invoice.getTenantId());
+        if (tenantEmail != null && !tenantEmail.isBlank()) {
+            kafka.send("notification-email",
+                    SendEmailEvent.builder()
+                            .to(tenantEmail)
+                            .templateCode("late_payment_final_notice")
+                            .params(Map.of(
+                                    "totalAmount", formatVnd(invoice.getTotalAmount()),
+                                    "dueDate",     DMY.format(invoice.getDueDate()),
+                                    "daysLate",    String.valueOf(invoice.getOverdueDays())
+                            ))
+                            .build());
+        }
     }
 
     private String formatVnd(Long amount) {

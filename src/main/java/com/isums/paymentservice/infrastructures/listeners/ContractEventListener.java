@@ -10,6 +10,7 @@ import com.isums.paymentservice.domains.enums.ReferenceType;
 import com.isums.paymentservice.domains.events.*;
 import com.isums.paymentservice.infrastructures.repositories.PaymentRepository;
 import com.isums.paymentservice.infrastructures.repositories.RentalInvoiceRepository;
+import com.isums.paymentservice.infrastructures.grpcs.UserGrpcService;
 import com.isums.paymentservice.services.PaymentTokenService;
 import common.kafkas.IdempotencyService;
 import common.kafkas.KafkaListenerHelper;
@@ -45,6 +46,7 @@ public class ContractEventListener {
     private final ObjectMapper objectMapper;
     private final IdempotencyService idempotencyService;
     private final KafkaListenerHelper kafkaHelper;
+    private final UserGrpcService userGrpcService;
 
     @Value("${app.payment.outsystem-url:https://outsystem.isums.pro/payments}")
     private String outsystemPaymentUrl;
@@ -301,7 +303,7 @@ public class ContractEventListener {
                     .paidAt(event.paidAt())
                     .build());
 
-            kafka.send("deposit-paid-topic", DepositPaidEvent.builder()
+            DepositPaidEvent paidEvent = DepositPaidEvent.builder()
                     .invoiceId(depositInvoice.getId())
                     .contractId(event.contractId())
                     .tenantId(event.tenantId())
@@ -310,10 +312,15 @@ public class ContractEventListener {
                     .invoiceType(InvoiceType.DEPOSIT)
                     .txnNo(event.receiptNumber())
                     .paidAt(event.paidAt())
-                    .build());
+                    .tenantEmail(depositInvoice.getTenantEmail())
+                    .build();
 
-            log.info("[Payment] CashDeposit recorded receipt={} invoiceId={}",
-                    event.receiptNumber(), depositInvoice.getId());
+            kafka.send("deposit-paid-topic", paidEvent);
+
+            kafka.send("payment-paid-topic", paidEvent);
+
+            log.info("[Payment] CashDeposit recorded receipt={} invoiceId={} tenantEmail={} (deposit-paid + payment-paid emitted)",
+                    event.receiptNumber(), depositInvoice.getId(), depositInvoice.getTenantEmail());
             ack.acknowledge();
 
         } catch (JacksonException e) {
@@ -812,6 +819,8 @@ public class ContractEventListener {
                 return;
             }
 
+            String tenantEmail = resolveTenantEmail(event.getTenantEmail(), event.getTenantId());
+
             RentalInvoice refundInvoice = RentalInvoice.builder()
                     .contractId(event.getContractId())
                     .tenantId(event.getTenantId())
@@ -823,22 +832,27 @@ public class ContractEventListener {
                     .penaltyAmount(0L)
                     .totalAmount(event.getRefundAmount())
                     .status(InvoiceStatus.UNPAID)
-                    .tenantEmail(event.getTenantEmail())
+                    .tenantEmail(tenantEmail)
                     .dueDate(Instant.now().plus(7, ChronoUnit.DAYS))
                     .build();
 
             invoiceRepository.save(refundInvoice);
 
-            kafka.send("notification-email", SendEmailEvent.builder()
-                    .to(event.getTenantEmail())
-                    .templateCode("deposit_refund_notify")
-                    .params(Map.of(
-                            "refundAmount", formatVnd(event.getRefundAmount()),
-                            "note", event.getNote() != null
-                                    ? event.getNote() : "No note",
-                            "dueDate", DMY.format(refundInvoice.getDueDate())
-                    ))
-                    .build());
+            if (tenantEmail != null && !tenantEmail.isBlank()) {
+                kafka.send("notification-email", SendEmailEvent.builder()
+                        .to(tenantEmail)
+                        .templateCode("deposit_refund_notify")
+                        .params(Map.of(
+                                "refundAmount", formatVnd(event.getRefundAmount()),
+                                "note", event.getNote() != null
+                                        ? event.getNote() : "No note",
+                                "dueDate", DMY.format(refundInvoice.getDueDate())
+                        ))
+                        .build());
+            } else {
+                log.warn("[Payment] Skip deposit refund email, tenant email unavailable contractId={} tenantId={}",
+                        event.getContractId(), event.getTenantId());
+            }
 
             log.info("[Payment] DEPOSIT_REFUND invoice created contractId={} amount={}",
                     event.getContractId(), event.getRefundAmount());
@@ -854,5 +868,66 @@ public class ContractEventListener {
         if (amount == null) return "0 ₫";
         return NumberFormat.getNumberInstance(Locale.of("vi", "VN"))
                 .format(amount) + " ₫";
+    }
+
+    private String resolveTenantEmail(String eventEmail, UUID tenantId) {
+        if (eventEmail != null && !eventEmail.isBlank()) {
+            return eventEmail.trim();
+        }
+        if (tenantId == null) {
+            return null;
+        }
+        try {
+            return userGrpcService.getTenantEmail(tenantId);
+        } catch (Exception e) {
+            log.warn("[Payment] Cannot resolve tenant email tenantId={}: {}", tenantId, e.getMessage());
+            return null;
+        }
+    }
+
+    @KafkaListener(topics = "contract.force-terminated", groupId = "payment-group")
+    @Transactional
+    public void handleForceTermination(
+            ConsumerRecord<String, String> record, Acknowledgment ack) {
+        try {
+            ForceTerminationEvent event = objectMapper.readValue(
+                    record.value(), ForceTerminationEvent.class);
+
+            if (event.getContractId() == null) {
+                ack.acknowledge();
+                return;
+            }
+
+            UUID contractId = event.getContractId();
+
+            int unpaidForfeit = 0;
+            for (InvoiceStatus open : List.of(InvoiceStatus.UNPAID, InvoiceStatus.OVERDUE)) {
+                for (RentalInvoice inv : invoiceRepository.findByContractIdAndStatus(contractId, open)) {
+                    if (inv.getType() == InvoiceType.DEPOSIT) continue;
+                    inv.setStatus(InvoiceStatus.FORFEITED);
+                    invoiceRepository.save(inv);
+                    unpaidForfeit++;
+                }
+            }
+
+            invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT).ifPresent(dep -> {
+                if (dep.getStatus() == InvoiceStatus.PAID) {
+                    dep.setStatus(InvoiceStatus.FORFEITED);
+                    invoiceRepository.save(dep);
+                    log.info("[Payment] Deposit FORFEITED contractId={} amount={}",
+                            contractId, dep.getTotalAmount());
+                }
+            });
+
+            log.info("[Payment] ForceTermination handled contractId={} unpaidForfeit={} reason={}",
+                    contractId, unpaidForfeit, event.getReason());
+            ack.acknowledge();
+        } catch (JacksonException e) {
+            log.error("[Payment] force-terminated deserialize failed: {}", e.getMessage());
+            ack.acknowledge();
+        } catch (Exception e) {
+            log.error("[Payment] handleForceTermination failed: {}", e.getMessage(), e);
+            throw new RuntimeException(e);
+        }
     }
 }
