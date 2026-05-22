@@ -88,6 +88,11 @@ public class ContractEventListener {
                         .params(params)
                         .build());
                 log.info("[Payment] CONTRACT_COMPLETED email queued to={}", event.getTenantEmail());
+            } else {
+                log.warn("[Payment] CONTRACT_COMPLETED email SKIPPED contractId={} reason=signedPdfUrl={} tenantEmail={} - deposit invoice will still be created but tenant won't receive payment link. Manager must call POST /api/econtracts/{id}/admin/resend-completion after updating tenantEmail.",
+                        event.getContractId(),
+                        event.getSignedPdfUrl() == null ? "null" : "ok",
+                        event.getTenantEmail() == null || event.getTenantEmail().isBlank() ? "blank" : "ok");
             }
 
             long billable = event.getDepositAmount() != null ? event.getDepositAmount() : 0L;
