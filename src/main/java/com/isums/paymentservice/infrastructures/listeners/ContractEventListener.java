@@ -55,13 +55,13 @@ public class ContractEventListener {
     private static final DateTimeFormatter DMY = DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(VN);
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("HH:mm 'ngày' dd/MM/yyyy").withZone(VN);
 
-    @KafkaListener(topics = "contract-completed-topic", groupId = "payment-group")
-    public void handleContractCompleted(String payload, Acknowledgment ack) {
+    @KafkaListener(topics = "contract-completed-topic", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
+    public void handleContractCompleted(String payload) {
         log.info("[Payment] ContractCompleted ENTRY len={}", payload != null ? payload.length() : -1);
         try {
             if (payload == null) {
                 log.error("[Payment] ContractCompleted null payload, skipping");
-                ack.acknowledge();
                 return;
             }
             ContractCompletedEvent event = objectMapper.readValue(payload, ContractCompletedEvent.class);
@@ -71,7 +71,6 @@ public class ContractEventListener {
 
             if (invoiceRepository.existsByContractIdAndPeriodKey(event.getContractId(), "DEPOSIT")) {
                 log.warn("[Payment] Already processed contractId={}, skip", event.getContractId());
-                ack.acknowledge();
                 return;
             }
 
@@ -141,7 +140,6 @@ public class ContractEventListener {
                             event.getTenantEmail(),
                             event.getIsNewAccount());
                 }
-                ack.acknowledge();
                 return;
             }
 
@@ -211,7 +209,6 @@ public class ContractEventListener {
                             ))
                             .build());
                 }
-                ack.acknowledge();
                 return;
             }
 
@@ -239,7 +236,6 @@ public class ContractEventListener {
                         .build());
                 log.info("[Payment] Deposit increase email sent contractId={} additional={} paymentUrl={}",
                         event.getContractId(), billable, topupPaymentUrl);
-                ack.acknowledge();
                 return;
             }
 
@@ -251,11 +247,8 @@ public class ContractEventListener {
                 log.warn("[Payment] No invoices created contractId={}", event.getContractId());
             }
 
-            ack.acknowledge();
-
         } catch (JacksonException e) {
             log.error("[Payment] Deserialize failed raw={}: {}", payload, e.getMessage());
-            ack.acknowledge();
         } catch (Exception e) {
             log.error("[Payment] Processing failed, will retry: {}", e.getMessage(), e);
             throw new RuntimeException(e);
