@@ -32,7 +32,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -55,9 +54,11 @@ public class PaymentServiceImpl implements PaymentService {
     private final com.isums.paymentservice.infrastructures.client.SubscriptionPlanClient planClient;
     private final com.isums.paymentservice.infrastructures.repositories.LatePaymentActionLogRepository latePaymentLogRepo;
 
-    private static final DateTimeFormatter VNPAY_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+    private static final ZoneId VNPAY_TZ = ZoneId.of("Asia/Ho_Chi_Minh");
+    private static final DateTimeFormatter VNPAY_DATE_FORMAT =
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmss").withZone(VNPAY_TZ);
     private static final DateTimeFormatter DMY = DateTimeFormatter.ofPattern("dd/MM/yyyy")
-            .withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
+            .withZone(VNPAY_TZ);
 
     @Value("${app.payment.outsystem-url:https://outsystem.isums.pro/payments}")
     private String outsystemPaymentUrl;
@@ -727,8 +728,8 @@ public class PaymentServiceImpl implements PaymentService {
 
     private String buildVnpayUrl(Payment payment, long totalAmount,
                                  CreatePaymentRequest request, String ipAddr) {
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime expire = now.plusMinutes(vnPayProperties.getExpireMinutes());
+        java.time.ZonedDateTime now = java.time.ZonedDateTime.now(VNPAY_TZ);
+        java.time.ZonedDateTime expire = now.plusMinutes(vnPayProperties.getExpireMinutes());
 
         Map<String, String> params = new TreeMap<>();
         params.put("vnp_Version", vnPayProperties.getVersion());
