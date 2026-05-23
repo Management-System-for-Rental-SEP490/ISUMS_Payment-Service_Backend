@@ -25,8 +25,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.test.util.ReflectionTestUtils;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JacksonException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.util.List;
@@ -81,7 +81,7 @@ class ContractEventListenerTest {
         }
 
         @Test
-        @DisplayName("creates DEPOSIT invoice, sends email, acknowledges")
+        @DisplayName("creates DEPOSIT invoice, sends email (auto-acked on return)")
         void happy() throws Exception {
             ContractCompletedEvent evt = event(10_000_000L);
             when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
@@ -89,15 +89,13 @@ class ContractEventListenerTest {
                     .thenReturn(false);
             when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-1");
 
-            listener.handleContractCompleted(rec, ack);
+            listener.handleContractCompleted("v");
 
             ArgumentCaptor<List<RentalInvoice>> cap = ArgumentCaptor.forClass(List.class);
             verify(invoiceRepository).saveAll(cap.capture());
             assertThatInvoiceDeposit(cap.getValue(), evt);
-            // 1 CONTRACT_COMPLETED email + 1 PAYMENT_INVOICE email per invoice
             verify(kafka, org.mockito.Mockito.times(2))
                     .send(eq("notification-email"), any(SendEmailEvent.class));
-            verify(ack).acknowledge();
         }
 
         private void assertThatInvoiceDeposit(List<RentalInvoice> invoices, ContractCompletedEvent evt) {
@@ -117,11 +115,10 @@ class ContractEventListenerTest {
             when(invoiceRepository.existsByContractIdAndPeriodKey(evt.getContractId(), "DEPOSIT"))
                     .thenReturn(true);
 
-            listener.handleContractCompleted(rec, ack);
+            listener.handleContractCompleted("v");
 
             verify(invoiceRepository, never()).saveAll(any());
             verify(kafka, never()).send(any(String.class), any(SendEmailEvent.class));
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -135,22 +132,27 @@ class ContractEventListenerTest {
                     .thenAnswer(inv -> inv.getArgument(0));
             when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-zero");
 
-            listener.handleContractCompleted(rec, ack);
+            listener.handleContractCompleted("v");
 
             verify(invoiceRepository, never()).saveAll(any());
-            verify(ack).acknowledge();
         }
 
         @Test
-        @DisplayName("acks on Jackson failure")
+        @DisplayName("swallows Jackson failure (logs + auto-acks on return)")
         void jacksonFails() throws Exception {
             when(objectMapper.readValue(any(String.class), eq(ContractCompletedEvent.class)))
                     .thenThrow(new JacksonException("bad") {});
 
-            listener.handleContractCompleted(rec, ack);
+            listener.handleContractCompleted("v");
 
-            verify(ack).acknowledge();
             verifyNoInteractions(invoiceRepository);
+        }
+
+        @Test
+        @DisplayName("swallows null payload (logs, no work, no retry)")
+        void nullPayload() {
+            listener.handleContractCompleted(null);
+            verifyNoInteractions(invoiceRepository, kafka);
         }
 
         @Test
@@ -160,9 +162,155 @@ class ContractEventListenerTest {
             when(invoiceRepository.existsByContractIdAndPeriodKey(any(), any()))
                     .thenThrow(new RuntimeException("db"));
 
-            assertThatThrownBy(() -> listener.handleContractCompleted(rec, ack))
+            assertThatThrownBy(() -> listener.handleContractCompleted("v"))
                     .isInstanceOf(RuntimeException.class);
-            verify(ack, never()).acknowledge();
+        }
+    }
+
+    @Nested
+    @DisplayName("handleDepositExpired")
+    class HandleDepositExpired {
+
+        private com.isums.paymentservice.domains.events.ContractDepositExpiredEvent event(
+                UUID contractId, String tenantEmail) {
+            return new com.isums.paymentservice.domains.events.ContractDepositExpiredEvent(
+                    contractId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    tenantEmail, "Khach Thue", "EC-12345678",
+                    5_000_000L, Instant.now(), Instant.now(), "msg-de-1");
+        }
+
+        private RentalInvoice depositInvoice(UUID contractId, InvoiceStatus status) {
+            return RentalInvoice.builder()
+                    .id(UUID.randomUUID()).contractId(contractId)
+                    .tenantId(UUID.randomUUID()).houseId(UUID.randomUUID())
+                    .type(InvoiceType.DEPOSIT).periodKey("DEPOSIT")
+                    .baseAmount(5_000_000L).totalAmount(5_000_000L)
+                    .status(status).dueDate(Instant.now()).build();
+        }
+
+        @Test
+        @DisplayName("cancels DEPOSIT invoice + queues expired-tenant email on happy path")
+        void happy() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            var evt = event(contractId, "alice@example.com");
+            RentalInvoice inv = depositInvoice(contractId, InvoiceStatus.UNPAID);
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events
+                    .ContractDepositExpiredEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(inv));
+
+            listener.handleDepositExpired("v");
+
+            org.assertj.core.api.Assertions.assertThat(inv.getStatus())
+                    .isEqualTo(InvoiceStatus.CANCELLED);
+            verify(invoiceRepository).save(inv);
+            ArgumentCaptor<SendEmailEvent> emailCap = ArgumentCaptor.forClass(SendEmailEvent.class);
+            verify(kafka).send(eq("notification-email"), emailCap.capture());
+            org.assertj.core.api.Assertions.assertThat(emailCap.getValue().to())
+                    .isEqualTo("alice@example.com");
+            org.assertj.core.api.Assertions.assertThat(emailCap.getValue().templateCode())
+                    .isEqualTo("CONTRACT_DEPOSIT_EXPIRED_TENANT_INVOICE");
+        }
+
+        @Test
+        @DisplayName("also cancels invoice in OVERDUE state")
+        void overdueInvoice() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            var evt = event(contractId, "bob@example.com");
+            RentalInvoice inv = depositInvoice(contractId, InvoiceStatus.OVERDUE);
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events
+                    .ContractDepositExpiredEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(inv));
+
+            listener.handleDepositExpired("v");
+
+            org.assertj.core.api.Assertions.assertThat(inv.getStatus())
+                    .isEqualTo(InvoiceStatus.CANCELLED);
+            verify(invoiceRepository).save(inv);
+        }
+
+        @Test
+        @DisplayName("does NOT re-cancel an already-CANCELLED invoice (idempotent)")
+        void alreadyCancelled() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            var evt = event(contractId, "carol@example.com");
+            RentalInvoice inv = depositInvoice(contractId, InvoiceStatus.CANCELLED);
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events
+                    .ContractDepositExpiredEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(inv));
+
+            listener.handleDepositExpired("v");
+
+            verify(invoiceRepository, never()).save(any(RentalInvoice.class));
+        }
+
+        @Test
+        @DisplayName("does NOT crash + does NOT send email when tenantEmail is blank")
+        void blankEmail() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            var evt = event(contractId, "");
+            RentalInvoice inv = depositInvoice(contractId, InvoiceStatus.UNPAID);
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events
+                    .ContractDepositExpiredEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(inv));
+
+            listener.handleDepositExpired("v");
+
+            org.assertj.core.api.Assertions.assertThat(inv.getStatus())
+                    .isEqualTo(InvoiceStatus.CANCELLED);
+            verify(kafka, never()).send(eq("notification-email"), any(SendEmailEvent.class));
+        }
+
+        @Test
+        @DisplayName("handles missing invoice (deletes nothing, still sends email)")
+        void missingInvoice() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            var evt = event(contractId, "dave@example.com");
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events
+                    .ContractDepositExpiredEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.empty());
+
+            listener.handleDepositExpired("v");
+
+            verify(invoiceRepository, never()).save(any(RentalInvoice.class));
+            verify(kafka).send(eq("notification-email"), any(SendEmailEvent.class));
+        }
+
+        @Test
+        @DisplayName("swallows Jackson failure (no retry)")
+        void jacksonFails() throws Exception {
+            when(objectMapper.readValue(any(String.class), eq(com.isums.paymentservice
+                    .domains.events.ContractDepositExpiredEvent.class)))
+                    .thenThrow(new JacksonException("bad") {});
+
+            listener.handleDepositExpired("v");
+
+            verifyNoInteractions(invoiceRepository);
+        }
+
+        @Test
+        @DisplayName("swallows null payload (logs, no work)")
+        void nullPayload() {
+            listener.handleDepositExpired(null);
+            verifyNoInteractions(invoiceRepository, kafka);
+        }
+
+        @Test
+        @DisplayName("rethrows for retry on generic Exception")
+        void rethrows() throws Exception {
+            UUID contractId = UUID.randomUUID();
+            var evt = event(contractId, "eve@example.com");
+            when(objectMapper.readValue("v", com.isums.paymentservice.domains.events
+                    .ContractDepositExpiredEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(any(), any()))
+                    .thenThrow(new RuntimeException("db down"));
+
+            assertThatThrownBy(() -> listener.handleDepositExpired("v"))
+                    .isInstanceOf(RuntimeException.class);
         }
     }
 

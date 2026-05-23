@@ -336,13 +336,19 @@ public class ContractEventListener {
         }
     }
 
-    @KafkaListener(topics = "contract.deposit-expired", groupId = "payment-group")
+    @KafkaListener(topics = "contract.deposit-expired", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
     @Transactional
-    public void handleDepositExpired(
-            ConsumerRecord<String, String> record, Acknowledgment ack) {
+    public void handleDepositExpired(String payload) {
+        log.info("[Payment] DepositExpired ENTRY len={}",
+                payload != null ? payload.length() : -1);
         try {
+            if (payload == null) {
+                log.error("[Payment] DepositExpired null payload, skipping");
+                return;
+            }
             ContractDepositExpiredEvent event = objectMapper.readValue(
-                    record.value(), ContractDepositExpiredEvent.class);
+                    payload, ContractDepositExpiredEvent.class);
 
             log.info("[Payment] DepositExpired contractId={} contractNo={}",
                     event.contractId(), event.contractNo());
@@ -373,11 +379,9 @@ public class ContractEventListener {
                         ))
                         .build());
             }
-
-            ack.acknowledge();
         } catch (JacksonException e) {
-            log.error("[Payment] Deserialize deposit-expired failed: {}", e.getMessage());
-            ack.acknowledge();
+            log.error("[Payment] Deserialize deposit-expired failed raw={}: {}",
+                    payload, e.getMessage());
         } catch (Exception e) {
             log.error("[Payment] handleDepositExpired failed: {}", e.getMessage(), e);
             throw new RuntimeException(e);
