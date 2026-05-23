@@ -69,36 +69,29 @@ public class ContractEventListener {
             log.info("[Payment] ContractCompleted contractId={} tenantId={} deposit={} rent={}",
                     event.getContractId(), event.getTenantId(), event.getDepositAmount(), event.getRentAmount());
 
-            if (invoiceRepository.existsByContractIdAndPeriodKey(event.getContractId(), "DEPOSIT")) {
-                log.warn("[Payment] Already processed contractId={}, skip", event.getContractId());
+            RentalInvoice existingDeposit = invoiceRepository
+                    .findByContractIdAndType(event.getContractId(), InvoiceType.DEPOSIT)
+                    .orElse(null);
+            if (existingDeposit != null) {
+                log.info("[Payment] DEPOSIT invoice already exists contractId={} invoiceId={} status={} — resend mode",
+                        event.getContractId(), existingDeposit.getId(), existingDeposit.getStatus());
+                queueContractCompletedEmail(event);
+                if (existingDeposit.getStatus() == InvoiceStatus.UNPAID
+                        || existingDeposit.getStatus() == InvoiceStatus.OVERDUE) {
+                    if (event.getTenantEmail() != null && !event.getTenantEmail().isBlank()) {
+                        sendPaymentEmail(List.of(existingDeposit), event);
+                    } else {
+                        log.warn("[Payment] resend skipped PAYMENT_INVOICE contractId={} reason=tenantEmail blank",
+                                event.getContractId());
+                    }
+                } else {
+                    log.info("[Payment] resend skipped PAYMENT_INVOICE contractId={} reason=invoice status={} (only UNPAID/OVERDUE resends)",
+                            event.getContractId(), existingDeposit.getStatus());
+                }
                 return;
             }
 
-            if (event.getSignedPdfUrl() != null
-                    && event.getTenantEmail() != null
-                    && !event.getTenantEmail().isBlank()) {
-                Map<String, Object> params = new HashMap<>();
-                params.put("contractId",
-                        event.getContractId().toString().substring(0, 8).toUpperCase());
-                params.put("signedPdfUrl", event.getSignedPdfUrl());
-                if (event.getDepositDueAt() != null) {
-                    params.put("depositDeadline", DT_FMT.format(event.getDepositDueAt()));
-                }
-                if (event.getDepositAmount() != null && event.getDepositAmount() > 0) {
-                    params.put("depositAmount", formatVnd(event.getDepositAmount()));
-                }
-                kafka.send("notification-email", SendEmailEvent.builder()
-                        .to(event.getTenantEmail())
-                        .templateCode("CONTRACT_COMPLETED")
-                        .params(params)
-                        .build());
-                log.info("[Payment] CONTRACT_COMPLETED email queued to={}", event.getTenantEmail());
-            } else {
-                log.warn("[Payment] CONTRACT_COMPLETED email SKIPPED contractId={} reason=signedPdfUrl={} tenantEmail={} - deposit invoice will still be created but tenant won't receive payment link. Manager must call POST /api/econtracts/{id}/admin/resend-completion after updating tenantEmail.",
-                        event.getContractId(),
-                        event.getSignedPdfUrl() == null ? "null" : "ok",
-                        event.getTenantEmail() == null || event.getTenantEmail().isBlank() ? "blank" : "ok");
-            }
+            queueContractCompletedEmail(event);
 
             long billable = event.getDepositAmount() != null ? event.getDepositAmount() : 0L;
             long transferred = event.getTransferredDepositAmount() != null
@@ -674,6 +667,33 @@ public class ContractEventListener {
                 .getOrDefault(locale != null ? locale : "vi", INVOICE_TYPE_LABELS.get("vi"));
         String label = map.get(type);
         return label != null ? label : type.name();
+    }
+
+    private void queueContractCompletedEmail(ContractCompletedEvent event) {
+        if (event.getSignedPdfUrl() == null
+                || event.getTenantEmail() == null
+                || event.getTenantEmail().isBlank()) {
+            log.warn("[Payment] CONTRACT_COMPLETED email SKIPPED contractId={} reason=signedPdfUrl={} tenantEmail={}",
+                    event.getContractId(),
+                    event.getSignedPdfUrl() == null ? "null" : "ok",
+                    event.getTenantEmail() == null || event.getTenantEmail().isBlank() ? "blank" : "ok");
+            return;
+        }
+        Map<String, Object> params = new HashMap<>();
+        params.put("contractId", event.getContractId().toString().substring(0, 8).toUpperCase());
+        params.put("signedPdfUrl", event.getSignedPdfUrl());
+        if (event.getDepositDueAt() != null) {
+            params.put("depositDeadline", DT_FMT.format(event.getDepositDueAt()));
+        }
+        if (event.getDepositAmount() != null && event.getDepositAmount() > 0) {
+            params.put("depositAmount", formatVnd(event.getDepositAmount()));
+        }
+        kafka.send("notification-email", SendEmailEvent.builder()
+                .to(event.getTenantEmail())
+                .templateCode("CONTRACT_COMPLETED")
+                .params(params)
+                .build());
+        log.info("[Payment] CONTRACT_COMPLETED email queued to={}", event.getTenantEmail());
     }
 
     private void sendPaymentEmail(List<RentalInvoice> invoices, ContractCompletedEvent event) {

@@ -85,8 +85,8 @@ class ContractEventListenerTest {
         void happy() throws Exception {
             ContractCompletedEvent evt = event(10_000_000L);
             when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
-            when(invoiceRepository.existsByContractIdAndPeriodKey(evt.getContractId(), "DEPOSIT"))
-                    .thenReturn(false);
+            when(invoiceRepository.findByContractIdAndType(evt.getContractId(), InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.empty());
             when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-1");
 
             listener.handleContractCompleted("v");
@@ -108,17 +108,95 @@ class ContractEventListenerTest {
         }
 
         @Test
-        @DisplayName("skips when deposit invoice already exists (idempotent)")
-        void idempotent() throws Exception {
+        @DisplayName("when DEPOSIT already exists + UNPAID: re-queues both emails, does NOT recreate invoice")
+        void resendOnExistingUnpaid() throws Exception {
             ContractCompletedEvent evt = event(10_000_000L);
+            RentalInvoice existing = RentalInvoice.builder()
+                    .id(UUID.randomUUID()).contractId(evt.getContractId())
+                    .tenantId(evt.getTenantId()).houseId(evt.getHouseId())
+                    .type(InvoiceType.DEPOSIT).periodKey("DEPOSIT")
+                    .baseAmount(10_000_000L).totalAmount(10_000_000L)
+                    .status(InvoiceStatus.UNPAID).dueDate(Instant.now()).build();
             when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
-            when(invoiceRepository.existsByContractIdAndPeriodKey(evt.getContractId(), "DEPOSIT"))
-                    .thenReturn(true);
+            when(invoiceRepository.findByContractIdAndType(evt.getContractId(), InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(existing));
+            when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-resend");
 
             listener.handleContractCompleted("v");
 
             verify(invoiceRepository, never()).saveAll(any());
-            verify(kafka, never()).send(any(String.class), any(SendEmailEvent.class));
+            verify(invoiceRepository, never()).save(any(RentalInvoice.class));
+            verify(kafka, org.mockito.Mockito.times(2))
+                    .send(eq("notification-email"), any(SendEmailEvent.class));
+        }
+
+        @Test
+        @DisplayName("when DEPOSIT already exists + OVERDUE: re-queues both emails (still recoverable)")
+        void resendOnExistingOverdue() throws Exception {
+            ContractCompletedEvent evt = event(10_000_000L);
+            RentalInvoice existing = RentalInvoice.builder()
+                    .id(UUID.randomUUID()).contractId(evt.getContractId())
+                    .tenantId(evt.getTenantId()).houseId(evt.getHouseId())
+                    .type(InvoiceType.DEPOSIT).periodKey("DEPOSIT")
+                    .baseAmount(10_000_000L).totalAmount(10_000_000L)
+                    .status(InvoiceStatus.OVERDUE).dueDate(Instant.now()).build();
+            when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(evt.getContractId(), InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(existing));
+            when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-od");
+
+            listener.handleContractCompleted("v");
+
+            verify(invoiceRepository, never()).saveAll(any());
+            verify(kafka, org.mockito.Mockito.times(2))
+                    .send(eq("notification-email"), any(SendEmailEvent.class));
+        }
+
+        @Test
+        @DisplayName("when DEPOSIT already exists + PAID: re-queues CONTRACT_COMPLETED only, no payment link")
+        void resendOnExistingPaid() throws Exception {
+            ContractCompletedEvent evt = event(10_000_000L);
+            RentalInvoice existing = RentalInvoice.builder()
+                    .id(UUID.randomUUID()).contractId(evt.getContractId())
+                    .tenantId(evt.getTenantId()).houseId(evt.getHouseId())
+                    .type(InvoiceType.DEPOSIT).periodKey("DEPOSIT")
+                    .baseAmount(10_000_000L).totalAmount(10_000_000L)
+                    .status(InvoiceStatus.PAID).dueDate(Instant.now()).build();
+            when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(evt.getContractId(), InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(existing));
+
+            listener.handleContractCompleted("v");
+
+            verify(invoiceRepository, never()).saveAll(any());
+            verify(kafka, org.mockito.Mockito.times(1))
+                    .send(eq("notification-email"), any(SendEmailEvent.class));
+        }
+
+        @Test
+        @DisplayName("when DEPOSIT exists + UNPAID but tenantEmail blank: skips PAYMENT_INVOICE, still queues CONTRACT_COMPLETED if signedPdfUrl present")
+        void resendWithBlankEmail() throws Exception {
+            ContractCompletedEvent evt = ContractCompletedEvent.builder()
+                    .contractId(UUID.randomUUID()).tenantId(UUID.randomUUID())
+                    .tenantEmail("").houseId(UUID.randomUUID())
+                    .landlordId(UUID.randomUUID()).isNewAccount(true)
+                    .depositAmount(10_000_000L).rentAmount(5_000_000L).payDate(5)
+                    .startAt(Instant.now()).signedPdfUrl("https://pdf/c.pdf")
+                    .build();
+            RentalInvoice existing = RentalInvoice.builder()
+                    .id(UUID.randomUUID()).contractId(evt.getContractId())
+                    .tenantId(evt.getTenantId()).houseId(evt.getHouseId())
+                    .type(InvoiceType.DEPOSIT).periodKey("DEPOSIT")
+                    .baseAmount(10_000_000L).totalAmount(10_000_000L)
+                    .status(InvoiceStatus.UNPAID).dueDate(Instant.now()).build();
+            when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
+            when(invoiceRepository.findByContractIdAndType(evt.getContractId(), InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.of(existing));
+
+            listener.handleContractCompleted("v");
+
+            verify(invoiceRepository, never()).saveAll(any());
+            verify(kafka, never()).send(eq("notification-email"), any(SendEmailEvent.class));
         }
 
         @Test
@@ -126,8 +204,8 @@ class ContractEventListenerTest {
         void zeroDeposit() throws Exception {
             ContractCompletedEvent evt = event(0L);
             when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(evt);
-            when(invoiceRepository.existsByContractIdAndPeriodKey(evt.getContractId(), "DEPOSIT"))
-                    .thenReturn(false);
+            when(invoiceRepository.findByContractIdAndType(evt.getContractId(), InvoiceType.DEPOSIT))
+                    .thenReturn(Optional.empty());
             when(invoiceRepository.save(any(RentalInvoice.class)))
                     .thenAnswer(inv -> inv.getArgument(0));
             when(paymentTokenService.generateToken(any(), any())).thenReturn("tok-zero");
