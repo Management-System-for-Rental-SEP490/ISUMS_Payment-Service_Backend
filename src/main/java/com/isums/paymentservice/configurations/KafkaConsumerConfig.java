@@ -56,9 +56,9 @@ public class KafkaConsumerConfig {
         DefaultErrorHandler handler = new DefaultErrorHandler(recoverer, backOff);
 
         handler.addNotRetryableExceptions(
-                tools.jackson.core.JacksonException.class,
-                tools.jackson.databind.exc.InvalidDefinitionException.class,
-                tools.jackson.databind.exc.UnrecognizedPropertyException.class,
+                com.fasterxml.jackson.core.JacksonException.class,
+                com.fasterxml.jackson.databind.exc.InvalidDefinitionException.class,
+                com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException.class,
                 IllegalArgumentException.class,
                 org.springframework.messaging.converter.MessageConversionException.class,
                 org.springframework.dao.DataIntegrityViolationException.class,

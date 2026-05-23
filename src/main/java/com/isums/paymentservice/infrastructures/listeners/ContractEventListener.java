@@ -23,8 +23,8 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JacksonException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.text.NumberFormat;
 import java.time.Instant;
@@ -57,6 +57,8 @@ public class ContractEventListener {
 
     @KafkaListener(topics = "contract-completed-topic", groupId = "payment-group")
     public void handleContractCompleted(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        log.info("[Payment] ContractCompleted ENTRY key={} valueLen={}",
+                record.key(), record.value() != null ? record.value().length() : -1);
         try {
             ContractCompletedEvent event = objectMapper.readValue(record.value(), ContractCompletedEvent.class);
 
