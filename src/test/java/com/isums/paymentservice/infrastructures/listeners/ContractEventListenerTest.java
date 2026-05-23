@@ -396,9 +396,6 @@ class ContractEventListenerTest {
     @DisplayName("handleDepositPaid")
     class HandleDepositPaid {
 
-        private ConsumerRecord<String, String> rec = new ConsumerRecord<>(
-                "deposit-paid-topic", 0, 0L, "k", "v");
-
         @Test
         @DisplayName("creates MONTHLY_RENT invoice and enriches/maps events on happy path")
         void happy() throws Exception {
@@ -431,7 +428,7 @@ class ContractEventListenerTest {
             });
             when(paymentTokenService.generateToken(any(), eq(tenantId))).thenReturn("tok-xyz");
 
-            listener.handleDepositPaid(rec, ack);
+            listener.handleDepositPaid("v");
 
             ArgumentCaptor<RentalInvoice> invCap = ArgumentCaptor.forClass(RentalInvoice.class);
             verify(invoiceRepository).save(invCap.capture());
@@ -440,7 +437,6 @@ class ContractEventListenerTest {
 
             verify(kafka).send(eq("deposit-paid-enriched-topic"), any());
             verify(kafka).send(eq("map-user-to-house-topic"), any());
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -457,11 +453,10 @@ class ContractEventListenerTest {
             when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
                     .thenReturn(Optional.empty());
 
-            listener.handleDepositPaid(rec, ack);
+            listener.handleDepositPaid("v");
 
             verify(invoiceRepository, never()).save(any());
             verify(kafka, never()).send(any(String.class), any());
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -495,36 +490,30 @@ class ContractEventListenerTest {
                     .thenReturn(Optional.of(existingMonthly));
             when(paymentTokenService.generateToken(any(), eq(tenantId))).thenReturn("tok-xyz");
 
-            listener.handleDepositPaid(rec, ack);
+            listener.handleDepositPaid("v");
 
             verify(invoiceRepository, never()).save(any());
             verify(kafka).send(eq("deposit-paid-enriched-topic"), any());
             verify(kafka).send(eq("map-user-to-house-topic"), any());
-            verify(idempotencyService).markProcessed("test-msg-id");
-            verify(ack).acknowledge();
         }
 
         @Test
-        @DisplayName("skips when message is already processed (Kafka redelivery dedup)")
-        void duplicateMessage() throws Exception {
-            when(idempotencyService.isDuplicate("test-msg-id")).thenReturn(true);
-
-            listener.handleDepositPaid(rec, ack);
-
-            verify(invoiceRepository, never()).findByContractIdAndType(any(), any());
+        @DisplayName("swallows null payload (no work, no retry)")
+        void nullPayload() {
+            listener.handleDepositPaid(null);
+            verifyNoInteractions(invoiceRepository);
             verify(kafka, never()).send(any(String.class), any());
-            verify(ack).acknowledge();
         }
 
         @Test
-        @DisplayName("acks on Jackson failure")
+        @DisplayName("swallows Jackson failure")
         void jacksonFails() throws Exception {
             when(objectMapper.readValue(any(String.class), eq(DepositPaidEvent.class)))
                     .thenThrow(new JacksonException("bad") {});
 
-            listener.handleDepositPaid(rec, ack);
+            listener.handleDepositPaid("v");
 
-            verify(ack).acknowledge();
+            verifyNoInteractions(invoiceRepository);
         }
     }
 

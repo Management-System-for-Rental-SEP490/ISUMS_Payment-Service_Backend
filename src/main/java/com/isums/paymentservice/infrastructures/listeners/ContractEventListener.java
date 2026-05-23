@@ -381,18 +381,17 @@ public class ContractEventListener {
         }
     }
 
-    @KafkaListener(topics = "deposit-paid-topic", groupId = "payment-group")
-    public void handleDepositPaid(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        String messageId = kafkaHelper.extractMessageId(record);
-        kafkaHelper.setupMDC(record, messageId);
+    @KafkaListener(topics = "deposit-paid-topic", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
+    public void handleDepositPaid(String payload) {
+        log.info("[Payment] DepositPaid ENTRY len={}",
+                payload != null ? payload.length() : -1);
         try {
-            if (idempotencyService.isDuplicate(messageId)) {
-                log.warn("[Payment] Duplicate deposit-paid skipped messageId={}", messageId);
-                ack.acknowledge();
+            if (payload == null) {
+                log.error("[Payment] DepositPaid null payload, skipping");
                 return;
             }
-
-            DepositPaidEvent event = objectMapper.readValue(record.value(), DepositPaidEvent.class);
+            DepositPaidEvent event = objectMapper.readValue(payload, DepositPaidEvent.class);
 
             log.info("[Payment] DepositPaid contractId={} tenantId={}",
                     event.contractId(), event.tenantId());
@@ -403,8 +402,6 @@ public class ContractEventListener {
 
             if (depositInvoice == null || depositInvoice.getRentAmount() == null) {
                 log.warn("[Payment] No deposit context contractId={}, skip", event.contractId());
-                idempotencyService.markProcessed(messageId);
-                ack.acknowledge();
                 return;
             }
 
@@ -433,8 +430,6 @@ public class ContractEventListener {
                 if (monthlyInvoice == null) {
                     log.error("[Payment] handleDepositPaid: MONTHLY_RENT lookup failed contractId={} periodKey={} — activation chain broken",
                             event.contractId(), periodKey);
-                    idempotencyService.markProcessed(messageId);
-                    ack.acknowledge();
                     return;
                 }
                 log.info("[Payment] handleDepositPaid: re-emitting enriched event for existing MONTHLY_RENT contractId={} invoiceId={}",
@@ -452,17 +447,12 @@ public class ContractEventListener {
 
             log.info("[Payment] MONTHLY_RENT enriched event sent contractId={}",
                     event.contractId());
-            idempotencyService.markProcessed(messageId);
-            ack.acknowledge();
 
         } catch (JacksonException e) {
-            log.error("[Payment] Deserialize deposit-paid failed messageId={}: {}", messageId, e.getMessage());
-            ack.acknowledge();
+            log.error("[Payment] Deserialize deposit-paid failed raw={}: {}", payload, e.getMessage());
         } catch (Exception e) {
-            log.error("[Payment] handleDepositPaid failed messageId={}, will retry: {}", messageId, e.getMessage(), e);
+            log.error("[Payment] handleDepositPaid failed: {}", e.getMessage(), e);
             throw new RuntimeException(e);
-        } finally {
-            kafkaHelper.clearMDC();
         }
     }
 
