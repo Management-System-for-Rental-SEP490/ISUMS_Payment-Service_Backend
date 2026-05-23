@@ -56,11 +56,15 @@ public class ContractEventListener {
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("HH:mm 'ngày' dd/MM/yyyy").withZone(VN);
 
     @KafkaListener(topics = "contract-completed-topic", groupId = "payment-group")
-    public void handleContractCompleted(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        log.info("[Payment] ContractCompleted ENTRY key={} valueLen={}",
-                record.key(), record.value() != null ? record.value().length() : -1);
+    public void handleContractCompleted(String payload, Acknowledgment ack) {
+        log.info("[Payment] ContractCompleted ENTRY len={}", payload != null ? payload.length() : -1);
         try {
-            ContractCompletedEvent event = objectMapper.readValue(record.value(), ContractCompletedEvent.class);
+            if (payload == null) {
+                log.error("[Payment] ContractCompleted null payload, skipping");
+                ack.acknowledge();
+                return;
+            }
+            ContractCompletedEvent event = objectMapper.readValue(payload, ContractCompletedEvent.class);
 
             log.info("[Payment] ContractCompleted contractId={} tenantId={} deposit={} rent={}",
                     event.getContractId(), event.getTenantId(), event.getDepositAmount(), event.getRentAmount());
@@ -250,7 +254,7 @@ public class ContractEventListener {
             ack.acknowledge();
 
         } catch (JacksonException e) {
-            log.error("[Payment] Deserialize failed raw={}: {}", record.value(), e.getMessage());
+            log.error("[Payment] Deserialize failed raw={}: {}", payload, e.getMessage());
             ack.acknowledge();
         } catch (Exception e) {
             log.error("[Payment] Processing failed, will retry: {}", e.getMessage(), e);
