@@ -248,21 +248,28 @@ public class ContractEventListener {
         }
     }
 
-    @KafkaListener(topics = "contract.cash-deposit-confirmed", groupId = "payment-group")
+    @KafkaListener(topics = "contract.cash-deposit-confirmed", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
     @Transactional
-    public void handleContractCashDepositConfirmed(
-            ConsumerRecord<String, String> record, Acknowledgment ack) {
+    public void handleContractCashDepositConfirmed(String payload) {
+        log.info("[Payment] CashDepositConfirmed ENTRY len={}",
+                payload != null ? payload.length() : -1);
+        if (payload == null) return;
+        ContractCashDepositConfirmedEvent event;
         try {
-            ContractCashDepositConfirmedEvent event = objectMapper.readValue(
-                    record.value(), ContractCashDepositConfirmedEvent.class);
+            event = objectMapper.readValue(payload, ContractCashDepositConfirmedEvent.class);
+        } catch (JacksonException e) {
+            log.error("[Payment] Deserialize cash-deposit-confirmed failed raw={}: {}", payload, e.getMessage());
+            return;
+        }
 
-            log.info("[Payment] CashDepositConfirmed contractId={} receipt={} amount={}",
-                    event.contractId(), event.receiptNumber(), event.amount());
+        log.info("[Payment] CashDepositConfirmed contractId={} receipt={} amount={}",
+                event.contractId(), event.receiptNumber(), event.amount());
 
+        try {
             if (paymentRepository.findByGatewayTxnId(event.receiptNumber()).isPresent()) {
                 log.warn("[Payment] CashDeposit already processed receipt={}, skip",
                         event.receiptNumber());
-                ack.acknowledge();
                 return;
             }
 
@@ -273,7 +280,6 @@ public class ContractEventListener {
             if (depositInvoice == null) {
                 log.warn("[Payment] No DEPOSIT invoice for contractId={}, skip cash confirm",
                         event.contractId());
-                ack.acknowledge();
                 return;
             }
 
@@ -313,18 +319,14 @@ public class ContractEventListener {
                     .build();
 
             kafka.send("deposit-paid-topic", paidEvent);
-
             kafka.send("payment-paid-topic", paidEvent);
 
             log.info("[Payment] CashDeposit recorded receipt={} invoiceId={} tenantEmail={} (deposit-paid + payment-paid emitted)",
                     event.receiptNumber(), depositInvoice.getId(), depositInvoice.getTenantEmail());
-            ack.acknowledge();
 
-        } catch (JacksonException e) {
-            log.error("[Payment] Deserialize cash-deposit-confirmed failed: {}", e.getMessage());
-            ack.acknowledge();
         } catch (Exception e) {
-            log.error("[Payment] handleContractCashDepositConfirmed failed: {}", e.getMessage(), e);
+            log.warn("[Payment] handleContractCashDepositConfirmed failed receipt={} - will retry: {}",
+                    event.receiptNumber(), e.getMessage());
             throw new RuntimeException(e);
         }
     }
@@ -456,20 +458,27 @@ public class ContractEventListener {
         }
     }
 
-    @KafkaListener(topics = "contract.deposit-invoice-cancel-requested", groupId = "payment-group")
+    @KafkaListener(topics = "contract.deposit-invoice-cancel-requested", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
     @Transactional
-    public void handleCancelDepositInvoiceRequested(ConsumerRecord<String, String> record, Acknowledgment ack) {
+    public void handleCancelDepositInvoiceRequested(String payload) {
+        log.info("[Payment] CancelDepositInvoiceRequested ENTRY len={}",
+                payload != null ? payload.length() : -1);
+        if (payload == null) return;
+        CancelDepositInvoiceRequestedEvent event;
         try {
-            CancelDepositInvoiceRequestedEvent event = objectMapper.readValue(
-                    record.value(), CancelDepositInvoiceRequestedEvent.class);
-
+            event = objectMapper.readValue(payload, CancelDepositInvoiceRequestedEvent.class);
+        } catch (JacksonException e) {
+            log.error("[Payment] Deserialize cancel deposit failed raw={}: {}", payload, e.getMessage());
+            return;
+        }
+        try {
             RentalInvoice depositInvoice = invoiceRepository
                     .findByContractIdAndType(event.getContractId(), InvoiceType.DEPOSIT)
                     .orElse(null);
 
             if (depositInvoice == null) {
                 log.info("[Payment] No deposit invoice to cancel contractId={}", event.getContractId());
-                ack.acknowledge();
                 return;
             }
 
@@ -477,7 +486,6 @@ public class ContractEventListener {
                     && depositInvoice.getStatus() != InvoiceStatus.OVERDUE) {
                 log.warn("[Payment] Deposit invoice not in cancellable state contractId={} invoiceId={} status={}",
                         event.getContractId(), depositInvoice.getId(), depositInvoice.getStatus());
-                ack.acknowledge();
                 return;
             }
 
@@ -486,12 +494,9 @@ public class ContractEventListener {
 
             log.info("[Payment] Deposit invoice cancelled contractId={} invoiceId={} reason={}",
                     event.getContractId(), depositInvoice.getId(), event.getReason());
-            ack.acknowledge();
-        } catch (JacksonException e) {
-            log.error("[Payment] Deserialize cancel deposit failed: {}", e.getMessage());
-            ack.acknowledge();
         } catch (Exception e) {
-            log.error("[Payment] handleCancelDepositInvoiceRequested failed: {}", e.getMessage(), e);
+            log.warn("[Payment] handleCancelDepositInvoiceRequested failed contractId={} - will retry: {}",
+                    event.getContractId(), e.getMessage());
             throw new RuntimeException(e);
         }
     }
@@ -734,24 +739,30 @@ public class ContractEventListener {
         return due.toInstant();
     }
 
-    @KafkaListener(topics = "contract.replaced", groupId = "payment-group")
+    @KafkaListener(topics = "contract.replaced", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
     @Transactional
-    public void handleContractReplaced(ConsumerRecord<String, String> record, Acknowledgment ack) {
+    public void handleContractReplaced(String payload) {
+        log.info("[Payment] ContractReplaced ENTRY len={}",
+                payload != null ? payload.length() : -1);
+        if (payload == null) return;
+        ContractReplacedEvent event;
         try {
-            ContractReplacedEvent event = objectMapper.readValue(record.value(), ContractReplacedEvent.class);
-
+            event = objectMapper.readValue(payload, ContractReplacedEvent.class);
+        } catch (JacksonException e) {
+            log.error("[Payment] Deserialize contract.replaced failed raw={}: {}", payload, e.getMessage());
+            return;
+        }
+        try {
             int cancelled = cancelOpenRentInvoices(event.getOldContractId());
             int depositClosed = closeOldDeposit(event);
 
             log.info("[Payment] ContractReplaced oldContractId={} newContractId={} rentCancelled={} depositClosed={} handling={}",
                     event.getOldContractId(), event.getNewContractId(),
                     cancelled, depositClosed, event.getDepositHandling());
-            ack.acknowledge();
-        } catch (JacksonException e) {
-            log.error("[Payment] Deserialize contract.replaced failed: {}", e.getMessage());
-            ack.acknowledge();
         } catch (Exception e) {
-            log.error("[Payment] handleContractReplaced failed, will retry: {}", e.getMessage(), e);
+            log.warn("[Payment] handleContractReplaced failed oldContractId={} - will retry: {}",
+                    event.getOldContractId(), e.getMessage());
             throw new RuntimeException(e);
         }
     }
@@ -822,18 +833,25 @@ public class ContractEventListener {
         };
     }
 
-    @KafkaListener(topics = "contract.deposit-refund.confirmed", groupId = "payment-group")
+    @KafkaListener(topics = "contract.deposit-refund.confirmed", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
     @Transactional
-    public void handleDepositRefundConfirmed(
-            ConsumerRecord<String, String> record, Acknowledgment ack) {
+    public void handleDepositRefundConfirmed(String payload) {
+        log.info("[Payment] DepositRefundConfirmed ENTRY len={}",
+                payload != null ? payload.length() : -1);
+        if (payload == null) return;
+        DepositRefundConfirmedEvent event;
         try {
-            DepositRefundConfirmedEvent event = objectMapper.readValue(record.value(), DepositRefundConfirmedEvent.class);
-
+            event = objectMapper.readValue(payload, DepositRefundConfirmedEvent.class);
+        } catch (JacksonException e) {
+            log.error("[Payment] Deserialize deposit-refund.confirmed failed raw={}: {}", payload, e.getMessage());
+            return;
+        }
+        try {
             String periodKey = "DEPOSIT_REFUND";
             if (invoiceRepository.existsByContractIdAndPeriodKey(event.getContractId(), periodKey)) {
                 log.warn("[Payment] DEPOSIT_REFUND already exists contractId={}, skip",
                         event.getContractId());
-                ack.acknowledge();
                 return;
             }
 
@@ -874,10 +892,10 @@ public class ContractEventListener {
 
             log.info("[Payment] DEPOSIT_REFUND invoice created contractId={} amount={}",
                     event.getContractId(), event.getRefundAmount());
-            ack.acknowledge();
 
         } catch (Exception e) {
-            log.error("[Payment] handleDepositRefundConfirmed failed: {}", e.getMessage(), e);
+            log.warn("[Payment] handleDepositRefundConfirmed failed contractId={} - will retry: {}",
+                    event.getContractId(), e.getMessage());
             throw new RuntimeException(e);
         }
     }
@@ -903,21 +921,27 @@ public class ContractEventListener {
         }
     }
 
-    @KafkaListener(topics = "contract.force-terminated", groupId = "payment-group")
+    @KafkaListener(topics = "contract.force-terminated", groupId = "payment-group-v2",
+            properties = {"auto.offset.reset:earliest"})
     @Transactional
-    public void handleForceTermination(
-            ConsumerRecord<String, String> record, Acknowledgment ack) {
+    public void handleForceTermination(String payload) {
+        log.info("[Payment] ForceTermination ENTRY len={}",
+                payload != null ? payload.length() : -1);
+        if (payload == null) return;
+        ForceTerminationEvent event;
         try {
-            ForceTerminationEvent event = objectMapper.readValue(
-                    record.value(), ForceTerminationEvent.class);
+            event = objectMapper.readValue(payload, ForceTerminationEvent.class);
+        } catch (JacksonException e) {
+            log.error("[Payment] force-terminated deserialize failed raw={}: {}", payload, e.getMessage());
+            return;
+        }
 
-            if (event.getContractId() == null) {
-                ack.acknowledge();
-                return;
-            }
-
-            UUID contractId = event.getContractId();
-
+        if (event.getContractId() == null) {
+            log.warn("[Payment] ForceTermination missing contractId, skip");
+            return;
+        }
+        UUID contractId = event.getContractId();
+        try {
             int unpaidForfeit = 0;
             for (InvoiceStatus open : List.of(InvoiceStatus.UNPAID, InvoiceStatus.OVERDUE)) {
                 for (RentalInvoice inv : invoiceRepository.findByContractIdAndStatus(contractId, open)) {
@@ -939,12 +963,9 @@ public class ContractEventListener {
 
             log.info("[Payment] ForceTermination handled contractId={} unpaidForfeit={} reason={}",
                     contractId, unpaidForfeit, event.getReason());
-            ack.acknowledge();
-        } catch (JacksonException e) {
-            log.error("[Payment] force-terminated deserialize failed: {}", e.getMessage());
-            ack.acknowledge();
         } catch (Exception e) {
-            log.error("[Payment] handleForceTermination failed: {}", e.getMessage(), e);
+            log.warn("[Payment] handleForceTermination failed contractId={} - will retry: {}",
+                    contractId, e.getMessage());
             throw new RuntimeException(e);
         }
     }

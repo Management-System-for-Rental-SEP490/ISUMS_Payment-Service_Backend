@@ -26,6 +26,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.test.util.ReflectionTestUtils;
 import com.fasterxml.jackson.core.JacksonException;
+import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
@@ -219,7 +220,7 @@ class ContractEventListenerTest {
         @DisplayName("swallows Jackson failure (logs + auto-acks on return)")
         void jacksonFails() throws Exception {
             when(objectMapper.readValue(any(String.class), eq(ContractCompletedEvent.class)))
-                    .thenThrow(new JacksonException("bad") {});
+                    .thenThrow(new JsonParseException(null, "bad"));
 
             listener.handleContractCompleted("v");
 
@@ -237,7 +238,7 @@ class ContractEventListenerTest {
         @DisplayName("rethrows for retry on generic Exception")
         void rethrows() throws Exception {
             when(objectMapper.readValue("v", ContractCompletedEvent.class)).thenReturn(event(1L));
-            when(invoiceRepository.existsByContractIdAndPeriodKey(any(), any()))
+            when(invoiceRepository.findByContractIdAndType(any(), any()))
                     .thenThrow(new RuntimeException("db"));
 
             assertThatThrownBy(() -> listener.handleContractCompleted("v"))
@@ -363,7 +364,7 @@ class ContractEventListenerTest {
         void jacksonFails() throws Exception {
             when(objectMapper.readValue(any(String.class), eq(com.isums.paymentservice
                     .domains.events.ContractDepositExpiredEvent.class)))
-                    .thenThrow(new JacksonException("bad") {});
+                    .thenThrow(new JsonParseException(null, "bad"));
 
             listener.handleDepositExpired("v");
 
@@ -509,7 +510,7 @@ class ContractEventListenerTest {
         @DisplayName("swallows Jackson failure")
         void jacksonFails() throws Exception {
             when(objectMapper.readValue(any(String.class), eq(DepositPaidEvent.class)))
-                    .thenThrow(new JacksonException("bad") {});
+                    .thenThrow(new JsonParseException(null, "bad"));
 
             listener.handleDepositPaid("v");
 
@@ -537,14 +538,13 @@ class ContractEventListenerTest {
             when(invoiceRepository.existsByContractIdAndPeriodKey(contractId, "DEPOSIT_REFUND"))
                     .thenReturn(false);
 
-            listener.handleDepositRefundConfirmed(rec, ack);
+            listener.handleDepositRefundConfirmed("v");
 
             ArgumentCaptor<RentalInvoice> cap = ArgumentCaptor.forClass(RentalInvoice.class);
             verify(invoiceRepository).save(cap.capture());
             org.assertj.core.api.Assertions.assertThat(cap.getValue().getType()).isEqualTo(InvoiceType.DEPOSIT_REFUND);
             org.assertj.core.api.Assertions.assertThat(cap.getValue().getTotalAmount()).isEqualTo(2_000_000L);
             verify(kafka).send(eq("notification-email"), any(SendEmailEvent.class));
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -561,14 +561,13 @@ class ContractEventListenerTest {
                     .thenReturn(false);
             when(userGrpcService.getTenantEmail(tenantId)).thenReturn("alice@example.com");
 
-            listener.handleDepositRefundConfirmed(rec, ack);
+            listener.handleDepositRefundConfirmed("v");
 
             ArgumentCaptor<RentalInvoice> cap = ArgumentCaptor.forClass(RentalInvoice.class);
             verify(invoiceRepository).save(cap.capture());
             org.assertj.core.api.Assertions.assertThat(cap.getValue().getTenantEmail())
                     .isEqualTo("alice@example.com");
             verify(kafka).send(eq("notification-email"), any(SendEmailEvent.class));
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -583,10 +582,9 @@ class ContractEventListenerTest {
             when(invoiceRepository.existsByContractIdAndPeriodKey(contractId, "DEPOSIT_REFUND"))
                     .thenReturn(true);
 
-            listener.handleDepositRefundConfirmed(rec, ack);
+            listener.handleDepositRefundConfirmed("v");
 
             verify(invoiceRepository, never()).save(any());
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -595,9 +593,8 @@ class ContractEventListenerTest {
             when(objectMapper.readValue(any(String.class), eq(DepositRefundConfirmedEvent.class)))
                     .thenThrow(new RuntimeException("err"));
 
-            assertThatThrownBy(() -> listener.handleDepositRefundConfirmed(rec, ack))
+            assertThatThrownBy(() -> listener.handleDepositRefundConfirmed("v"))
                     .isInstanceOf(RuntimeException.class);
-            verify(ack, never()).acknowledge();
         }
     }
 
@@ -654,14 +651,13 @@ class ContractEventListenerTest {
             when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
                     .thenReturn(Optional.of(deposit));
 
-            listener.handleForceTermination(rec, ack);
+            listener.handleForceTermination("v");
 
             ArgumentCaptor<RentalInvoice> savedCaptor = ArgumentCaptor.forClass(RentalInvoice.class);
             verify(invoiceRepository, org.mockito.Mockito.atLeast(3)).save(savedCaptor.capture());
             org.assertj.core.api.Assertions.assertThat(savedCaptor.getAllValues())
                     .extracting(RentalInvoice::getStatus)
                     .containsOnly(InvoiceStatus.FORFEITED);
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -679,10 +675,9 @@ class ContractEventListenerTest {
             when(invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT))
                     .thenReturn(Optional.of(unpaidDeposit));
 
-            listener.handleForceTermination(rec, ack);
+            listener.handleForceTermination("v");
 
             verify(invoiceRepository, never()).save(unpaidDeposit);
-            verify(ack).acknowledge();
         }
 
         @Test
@@ -692,10 +687,9 @@ class ContractEventListenerTest {
                     .thenReturn(com.isums.paymentservice.domains.events.ForceTerminationEvent.builder()
                             .messageId("m").build());
 
-            listener.handleForceTermination(rec, ack);
+            listener.handleForceTermination("v");
 
             verify(invoiceRepository, never()).save(any());
-            verify(ack).acknowledge();
         }
     }
 }
