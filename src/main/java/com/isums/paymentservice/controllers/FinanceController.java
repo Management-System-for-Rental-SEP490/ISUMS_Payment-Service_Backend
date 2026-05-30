@@ -15,6 +15,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.UUID;
+
 @Tag(name = "Finance", description = "Finance dashboard for landlord and manager: revenue, expense, profit and outstanding receivables")
 @RestController
 @RequestMapping("/api/payments/finance")
@@ -33,8 +35,9 @@ public class FinanceController {
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam("from") String from,
             @RequestParam("to") String to,
-            @RequestParam(value = "compare", defaultValue = "false") boolean compare) {
-        FinanceDashboardDto dto = financeDashboardService.getDashboard(jwt.getSubject(), from, to, compare);
+            @RequestParam(value = "compare", defaultValue = "false") boolean compare,
+            @RequestParam(value = "regionId", required = false) UUID regionId) {
+        FinanceDashboardDto dto = financeDashboardService.getDashboard(jwt.getSubject(), from, to, compare, regionId);
         return ApiResponses.ok(dto, "Finance dashboard");
     }
 }

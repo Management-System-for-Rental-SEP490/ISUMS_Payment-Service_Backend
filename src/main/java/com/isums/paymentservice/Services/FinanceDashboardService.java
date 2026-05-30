@@ -6,6 +6,7 @@ import com.isums.paymentservice.domains.dtos.finance.FinanceDashboardDto;
 import com.isums.paymentservice.domains.dtos.finance.FinanceSummaryDto;
 import com.isums.paymentservice.domains.dtos.finance.MonthlyPointDto;
 import com.isums.paymentservice.domains.dtos.finance.OutstandingInvoiceDto;
+import com.isums.paymentservice.domains.dtos.finance.RegionFinanceSummaryDto;
 import com.isums.paymentservice.domains.dtos.finance.TopHouseStatDto;
 import com.isums.paymentservice.domains.dtos.finance.TransactionDto;
 import com.isums.paymentservice.domains.dtos.finance.projections.HouseAggregateProjection;
@@ -31,6 +32,7 @@ import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,6 +50,7 @@ public class FinanceDashboardService {
 
     private static final List<String> REVENUE_TYPES = List.of(
             InvoiceType.MONTHLY_RENT.name(),
+            InvoiceType.UTILITY.name(),
             InvoiceType.PENALTY.name());
 
     private static final List<String> EXPENSE_TYPES = List.of(
@@ -66,14 +69,15 @@ public class FinanceDashboardService {
     @Transactional(readOnly = true)
     @Cacheable(
             value = "finance-dashboard",
-            key = "#keycloakId + ':' + #fromIso + ':' + #toIso + ':' + #compare",
+            key = "#keycloakId + ':' + #fromIso + ':' + #toIso + ':' + #compare + ':' + (#regionId == null ? 'ALL' : #regionId)",
             unless = "#result == null"
     )
     public FinanceDashboardDto getDashboard(
             String keycloakId,
             String fromIso,
             String toIso,
-            boolean compare) {
+            boolean compare,
+            UUID regionId) {
         Instant from = parseInstant(fromIso);
         Instant to = parseInstant(toIso);
         if (!from.isBefore(to)) {
@@ -85,17 +89,17 @@ public class FinanceDashboardService {
             throw new IllegalStateException("Failed to resolve actor: " + keycloakId);
         }
         UUID internalUserId = UUID.fromString(user.getId());
-        boolean landlord = isLandlord(user);
 
-        ScopedHouses scoped = resolveScopedHouses(landlord, internalUserId);
+        FinanceScope scope = resolveFinanceScope(user, internalUserId, regionId);
 
-        FinanceSummaryDto summary = buildSummary(scoped, from, to, compare);
-        List<CategoryAmountDto> revenueBreakdown = buildBreakdown(scoped, from, to, REVENUE_TYPES);
-        List<CategoryAmountDto> expenseBreakdown = buildBreakdown(scoped, from, to, EXPENSE_TYPES);
-        List<MonthlyPointDto> monthlyTrend = buildMonthlyTrend(scoped, from, to);
-        List<TopHouseStatDto> topHouses = buildTopHouses(scoped, from, to);
-        List<TransactionDto> recentTransactions = buildRecentTransactions(scoped, from, to);
-        List<OutstandingInvoiceDto> outstandingInvoices = buildOutstanding(scoped);
+        FinanceSummaryDto summary = buildSummary(scope, from, to, compare);
+        List<CategoryAmountDto> revenueBreakdown = buildBreakdown(scope, from, to, REVENUE_TYPES);
+        List<CategoryAmountDto> expenseBreakdown = buildBreakdown(scope, from, to, EXPENSE_TYPES);
+        List<RegionFinanceSummaryDto> regionSummaries = buildRegionSummaries(scope, from, to);
+        List<MonthlyPointDto> monthlyTrend = buildMonthlyTrend(scope, from, to);
+        List<TopHouseStatDto> topHouses = buildTopHouses(scope, from, to);
+        List<TransactionDto> recentTransactions = buildRecentTransactions(scope, from, to);
+        List<OutstandingInvoiceDto> outstandingInvoices = buildOutstanding(scope);
 
         Instant[] previous = previousPeriod(from, to);
 
@@ -107,28 +111,29 @@ public class FinanceDashboardService {
                 .summary(summary)
                 .revenueBreakdown(revenueBreakdown)
                 .expenseBreakdown(expenseBreakdown)
+                .regionSummaries(regionSummaries)
                 .monthlyTrend(monthlyTrend)
                 .topHouses(topHouses)
                 .recentTransactions(recentTransactions)
                 .outstandingInvoices(outstandingInvoices)
-                .totalManagedHouses(scoped.totalHouses())
+                .totalManagedHouses(scope.totalHouses())
                 .build();
     }
 
     private FinanceSummaryDto buildSummary(
-            ScopedHouses scoped,
+            FinanceScope scope,
             Instant from,
             Instant to,
             boolean compare) {
-        long revenue = sumByTypes(scoped, from, to, REVENUE_TYPES);
-        long expense = sumByTypes(scoped, from, to, EXPENSE_TYPES);
+        long revenue = sumByTypes(scope, from, to, REVENUE_TYPES);
+        long expense = sumByTypes(scope, from, to, EXPENSE_TYPES);
         long netProfit = revenue - expense;
 
         Instant now = Instant.now();
         long outstandingAmount = nz(invoiceRepository.sumOutstandingAmount(
-                now, scoped.scoped(), scoped.houseIds()));
+                now, scope.applyHouseFilter(), scope.queryHouseIds()));
         long outstandingCount = invoiceRepository.countOutstanding(
-                now, scoped.scoped(), scoped.houseIds());
+                now, scope.applyHouseFilter(), scope.queryHouseIds());
 
         Long previousRevenue = null;
         Long previousExpense = null;
@@ -138,8 +143,8 @@ public class FinanceDashboardService {
         Double profitPct = null;
         if (compare) {
             Instant[] prev = previousPeriod(from, to);
-            previousRevenue = sumByTypes(scoped, prev[0], prev[1], REVENUE_TYPES);
-            previousExpense = sumByTypes(scoped, prev[0], prev[1], EXPENSE_TYPES);
+            previousRevenue = sumByTypes(scope, prev[0], prev[1], REVENUE_TYPES);
+            previousExpense = sumByTypes(scope, prev[0], prev[1], EXPENSE_TYPES);
             previousProfit = previousRevenue - previousExpense;
             revenuePct = changePercent(previousRevenue, revenue);
             expensePct = changePercent(previousExpense, expense);
@@ -162,12 +167,12 @@ public class FinanceDashboardService {
     }
 
     private List<CategoryAmountDto> buildBreakdown(
-            ScopedHouses scoped,
+            FinanceScope scope,
             Instant from,
             Instant to,
             List<String> types) {
         List<TypeAmountProjection> rows = invoiceRepository.aggregatePaidByType(
-                types, from, to, scoped.scoped(), scoped.houseIds());
+                types, from, to, scope.applyHouseFilter(), scope.queryHouseIds());
         long total = rows.stream().mapToLong(r -> nz(r.getAmount())).sum();
         Map<String, Long> byType = new HashMap<>();
         for (TypeAmountProjection row : rows) {
@@ -187,14 +192,14 @@ public class FinanceDashboardService {
     }
 
     private List<MonthlyPointDto> buildMonthlyTrend(
-            ScopedHouses scoped,
+            FinanceScope scope,
             Instant from,
             Instant to) {
         List<String> allTypes = new ArrayList<>(REVENUE_TYPES.size() + EXPENSE_TYPES.size());
         allTypes.addAll(REVENUE_TYPES);
         allTypes.addAll(EXPENSE_TYPES);
         List<MonthlyTotalProjection> rows = invoiceRepository.aggregateMonthlyByType(
-                allTypes, from, to, scoped.scoped(), scoped.houseIds());
+                allTypes, from, to, scope.applyHouseFilter(), scope.queryHouseIds());
 
         Set<String> revenueTypes = new java.util.HashSet<>(REVENUE_TYPES);
         Map<String, long[]> bucket = new LinkedHashMap<>();
@@ -232,16 +237,16 @@ public class FinanceDashboardService {
     }
 
     private List<TopHouseStatDto> buildTopHouses(
-            ScopedHouses scoped,
+            FinanceScope scope,
             Instant from,
             Instant to) {
         List<HouseAggregateProjection> rows = invoiceRepository.aggregateByHouse(
-                from, to, scoped.scoped(), scoped.houseIds(),
+                from, to, scope.applyHouseFilter(), scope.queryHouseIds(),
                 PageRequest.of(0, TOP_HOUSE_LIMIT));
         if (rows.isEmpty()) {
             return List.of();
         }
-        Map<UUID, HouseResponse> houseMap = scoped.houseMap();
+        Map<UUID, HouseResponse> houseMap = scope.houseMap();
         List<TopHouseStatDto> result = new ArrayList<>(rows.size());
         for (HouseAggregateProjection row : rows) {
             UUID houseId = row.getHouseId();
@@ -266,13 +271,13 @@ public class FinanceDashboardService {
     }
 
     private List<TransactionDto> buildRecentTransactions(
-            ScopedHouses scoped,
+            FinanceScope scope,
             Instant from,
             Instant to) {
         List<RentalInvoice> rows = invoiceRepository.findRecentPaid(
-                from, to, scoped.scoped(), scoped.houseIds(),
+                from, to, scope.applyHouseFilter(), scope.queryHouseIds(),
                 PageRequest.of(0, RECENT_TX_LIMIT));
-        Map<UUID, HouseResponse> houseMap = scoped.houseMap();
+        Map<UUID, HouseResponse> houseMap = scope.houseMap();
         return rows.stream()
                 .map(invoice -> TransactionDto.builder()
                         .invoiceId(invoice.getId())
@@ -289,12 +294,12 @@ public class FinanceDashboardService {
                 .toList();
     }
 
-    private List<OutstandingInvoiceDto> buildOutstanding(ScopedHouses scoped) {
+    private List<OutstandingInvoiceDto> buildOutstanding(FinanceScope scope) {
         Instant now = Instant.now();
         List<RentalInvoice> rows = invoiceRepository.findOutstanding(
-                now, scoped.scoped(), scoped.houseIds(),
+                now, scope.applyHouseFilter(), scope.queryHouseIds(),
                 PageRequest.of(0, OUTSTANDING_LIMIT));
-        Map<UUID, HouseResponse> houseMap = scoped.houseMap();
+        Map<UUID, HouseResponse> houseMap = scope.houseMap();
         return rows.stream()
                 .map(invoice -> OutstandingInvoiceDto.builder()
                         .invoiceId(invoice.getId())
@@ -310,28 +315,90 @@ public class FinanceDashboardService {
                 .toList();
     }
 
-    private long sumByTypes(ScopedHouses scoped, Instant from, Instant to, List<String> types) {
-        return invoiceRepository.aggregatePaidByType(types, from, to, scoped.scoped(), scoped.houseIds())
+    private List<RegionFinanceSummaryDto> buildRegionSummaries(FinanceScope scope, Instant from, Instant to) {
+        if (scope.houseMap().isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, List<UUID>> housesByRegion = scope.houseMap().entrySet().stream()
+                .filter(entry -> entry.getValue().getRegionId() != null && !entry.getValue().getRegionId().isBlank())
+                .collect(Collectors.groupingBy(
+                        entry -> UUID.fromString(entry.getValue().getRegionId()),
+                        LinkedHashMap::new,
+                        Collectors.mapping(Map.Entry::getKey, Collectors.toList())));
+
+        Instant now = Instant.now();
+        return housesByRegion.entrySet().stream()
+                .sorted(Comparator.comparing(entry -> entry.getKey().toString()))
+                .map(entry -> {
+                    FinanceScope regionScope = FinanceScope.forHouses(
+                            scope.type(),
+                            scope.requestedRegionId(),
+                            entry.getValue(),
+                            filterHouseMap(scope.houseMap(), entry.getValue()));
+                    long revenue = sumByTypes(regionScope, from, to, REVENUE_TYPES);
+                    long expense = sumByTypes(regionScope, from, to, EXPENSE_TYPES);
+                    long outstandingAmount = nz(invoiceRepository.sumOutstandingAmount(
+                            now, regionScope.applyHouseFilter(), regionScope.queryHouseIds()));
+                    long outstandingCount = invoiceRepository.countOutstanding(
+                            now, regionScope.applyHouseFilter(), regionScope.queryHouseIds());
+                    return RegionFinanceSummaryDto.builder()
+                            .regionId(entry.getKey())
+                            .totalHouses(entry.getValue().size())
+                            .totalRevenue(revenue)
+                            .totalExpense(expense)
+                            .netProfit(revenue - expense)
+                            .outstandingAmount(outstandingAmount)
+                            .outstandingCount((int) Math.min(outstandingCount, Integer.MAX_VALUE))
+                            .build();
+                })
+                .toList();
+    }
+
+    private long sumByTypes(FinanceScope scope, Instant from, Instant to, List<String> types) {
+        return invoiceRepository.aggregatePaidByType(types, from, to, scope.applyHouseFilter(), scope.queryHouseIds())
                 .stream()
                 .mapToLong(row -> nz(row.getAmount()))
                 .sum();
     }
 
-    private ScopedHouses resolveScopedHouses(boolean landlord, UUID internalUserId) {
-        if (landlord) {
-            List<HouseResponse> houses = houseGrpcClient.getAllHouses();
-            return ScopedHouses.unscoped(houses);
+    private FinanceScope resolveFinanceScope(UserResponse user, UUID internalUserId, UUID requestedRegionId) {
+        FinanceScopeType type;
+        if (hasRole(user, "LANDLORD")) {
+            type = FinanceScopeType.GLOBAL;
+        } else if (hasRole(user, "MANAGER")) {
+            type = FinanceScopeType.MANAGED_REGIONS;
+        } else {
+            throw new IllegalStateException("Actor is not allowed to view finance dashboard");
         }
-        List<HouseResponse> houses = houseGrpcClient.getHousesByManagerRegion(internalUserId);
-        return ScopedHouses.scoped(houses);
+
+        List<HouseResponse> houses;
+        boolean globalUnfiltered = type == FinanceScopeType.GLOBAL && requestedRegionId == null;
+        if (type == FinanceScopeType.GLOBAL) {
+            houses = houseGrpcClient.getAllHouses();
+            return FinanceScope.fromHouses(type, requestedRegionId, houses, globalUnfiltered);
+        }
+
+        houses = houseGrpcClient.getHousesByManagerRegion(internalUserId);
+        return FinanceScope.fromHouses(type, requestedRegionId, houses, false);
     }
 
-    private static boolean isLandlord(UserResponse user) {
+    private static boolean hasRole(UserResponse user, String roleName) {
         if (user.getRolesList() == null) {
             return false;
         }
         return user.getRolesList().stream()
-                .anyMatch(role -> "LANDLORD".equalsIgnoreCase(role));
+                .anyMatch(role -> roleName.equalsIgnoreCase(role));
+    }
+
+    private static Map<UUID, HouseResponse> filterHouseMap(Map<UUID, HouseResponse> source, List<UUID> ids) {
+        Set<UUID> idSet = Set.copyOf(ids);
+        return source.entrySet().stream()
+                .filter(entry -> idSet.contains(entry.getKey()))
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue,
+                        (a, b) -> a,
+                        LinkedHashMap::new));
     }
 
     private static String resolveHouseName(UUID houseId, Map<UUID, HouseResponse> houseMap) {
@@ -388,24 +455,56 @@ public class FinanceDashboardService {
         }
     }
 
-    private record ScopedHouses(boolean scoped, List<UUID> houseIds, Map<UUID, HouseResponse> houseMap, long totalHouses) {
+    private enum FinanceScopeType {
+        GLOBAL,
+        MANAGED_REGIONS
+    }
 
-        static ScopedHouses unscoped(List<HouseResponse> houses) {
+    private record FinanceScope(
+            FinanceScopeType type,
+            UUID requestedRegionId,
+            boolean applyHouseFilter,
+            List<UUID> queryHouseIds,
+            Map<UUID, HouseResponse> houseMap,
+            long totalHouses) {
+
+        static FinanceScope fromHouses(
+                FinanceScopeType type,
+                UUID requestedRegionId,
+                List<HouseResponse> houses,
+                boolean globalUnfiltered) {
             Map<UUID, HouseResponse> map = toHouseMap(houses);
-            List<UUID> ids = new ArrayList<>(map.keySet());
-            if (ids.isEmpty()) {
-                ids = List.of(new UUID(0L, 0L));
+            if (requestedRegionId != null) {
+                map = map.entrySet().stream()
+                        .filter(entry -> requestedRegionId.toString().equals(entry.getValue().getRegionId()))
+                        .collect(Collectors.toMap(
+                                Map.Entry::getKey,
+                                Map.Entry::getValue,
+                                (a, b) -> a,
+                                LinkedHashMap::new));
             }
-            return new ScopedHouses(false, ids, map, map.size());
+
+            List<UUID> ids = queryIds(map);
+            return new FinanceScope(type, requestedRegionId, !globalUnfiltered, ids, map, map.size());
         }
 
-        static ScopedHouses scoped(List<HouseResponse> houses) {
-            Map<UUID, HouseResponse> map = toHouseMap(houses);
-            List<UUID> ids = new ArrayList<>(map.keySet());
+        static FinanceScope forHouses(
+                FinanceScopeType type,
+                UUID requestedRegionId,
+                List<UUID> houseIds,
+                Map<UUID, HouseResponse> houseMap) {
+            return new FinanceScope(type, requestedRegionId, true, queryIds(houseIds), houseMap, houseMap.size());
+        }
+
+        private static List<UUID> queryIds(Map<UUID, HouseResponse> map) {
+            return queryIds(new ArrayList<>(map.keySet()));
+        }
+
+        private static List<UUID> queryIds(List<UUID> ids) {
             if (ids.isEmpty()) {
-                ids = List.of(new UUID(0L, 0L));
+                return List.of(new UUID(0L, 0L));
             }
-            return new ScopedHouses(true, ids, map, map.size());
+            return ids;
         }
 
         private static Map<UUID, HouseResponse> toHouseMap(List<HouseResponse> houses) {
@@ -415,7 +514,8 @@ public class FinanceDashboardService {
                     .collect(Collectors.toMap(
                             h -> UUID.fromString(h.getId()),
                             h -> h,
-                            (a, b) -> a));
+                            (a, b) -> a,
+                            LinkedHashMap::new));
         }
     }
 }

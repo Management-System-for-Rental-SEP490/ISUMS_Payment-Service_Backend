@@ -14,6 +14,7 @@ public record FinanceDashboardDto(
         FinanceSummaryDto summary,
         List<CategoryAmountDto> revenueBreakdown,
         List<CategoryAmountDto> expenseBreakdown,
+        List<RegionFinanceSummaryDto> regionSummaries,
         List<MonthlyPointDto> monthlyTrend,
         List<TopHouseStatDto> topHouses,
         List<TransactionDto> recentTransactions,
