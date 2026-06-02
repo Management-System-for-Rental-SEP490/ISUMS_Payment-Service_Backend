@@ -66,9 +66,9 @@ public class SubscriptionPlanClient {
                     data.path("isActive").asBoolean(false)
             );
         } catch (Exception e) {
-            log.error("[PlanClient] fetch failed planId={}: {}", planId, e.getMessage());
+            log.error("[PlanClient] fetch failed planId={}: {}", planId, e.getMessage(), e);
             throw new IllegalStateException(
-                    "Cannot resolve subscription plan from Notification-Service: " + e.getMessage(), e);
+                    "Không thể lấy thông tin gói đăng ký. Vui lòng thử lại sau.", e);
         }
     }
 
