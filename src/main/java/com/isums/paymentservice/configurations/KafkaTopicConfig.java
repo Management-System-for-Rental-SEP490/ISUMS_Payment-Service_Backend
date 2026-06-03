@@ -10,23 +10,31 @@ public class KafkaTopicConfig {
 
     @Bean
     public NewTopic quoteInvoiceCreateTopic() {
-        return TopicBuilder.name("quote-invoice-create")
-                .partitions(1)
-                .replicas(1)
-                .build();
+        return singlePartitionTopic("quote-invoice-create");
+    }
+
+    @Bean
+    public NewTopic quoteInvoiceCreateDltTopic() {
+        return singlePartitionTopic("quote-invoice-create.DLT");
     }
 
     @Bean
     public NewTopic quotePaymentCompletedTopic() {
-        return TopicBuilder.name("quote-payment-completed")
-                .partitions(1)
-                .replicas(1)
-                .build();
+        return singlePartitionTopic("quote-payment-completed");
     }
 
     @Bean
     public NewTopic quoteCashPaymentConfirmedTopic() {
-        return TopicBuilder.name("quote-cash-payment-confirmed")
+        return singlePartitionTopic("quote-cash-payment-confirmed");
+    }
+
+    @Bean
+    public NewTopic quoteCashPaymentConfirmedDltTopic() {
+        return singlePartitionTopic("quote-cash-payment-confirmed.DLT");
+    }
+
+    private NewTopic singlePartitionTopic(String name) {
+        return TopicBuilder.name(name)
                 .partitions(1)
                 .replicas(1)
                 .build();
