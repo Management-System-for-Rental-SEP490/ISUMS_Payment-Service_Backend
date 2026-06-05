@@ -24,4 +24,5 @@ public class ContractReplacedEvent {
     private Long transferredDepositAmount;
     private String reason;
     private Instant replacedAt;
+    private Instant newHandoverDate;
 }
