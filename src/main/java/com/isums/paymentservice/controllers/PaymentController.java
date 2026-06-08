@@ -165,12 +165,19 @@ public class PaymentController {
         return ApiResponses.ok(null, "Payment notification has been resent");
     }
 
+    @GetMapping("/contracts/{contractId}/deposit-refund-invoice")
+    @PreAuthorize("hasAnyRole('LANDLORD', 'MANAGER')")
+    public ApiResponse<DepositRefundInvoiceDto> getDepositRefundInvoice(@PathVariable UUID contractId) {
+        return ApiResponses.ok(paymentService.getDepositRefundInvoice(contractId), "Success");
+    }
+
     @PutMapping("/{invoiceId}/mark-refund-paid")
     @PreAuthorize("hasAnyRole('LANDLORD', 'MANAGER')")
     public ApiResponse<Void> markRefundPaid(
             @PathVariable UUID invoiceId,
-            @RequestBody @Valid MarkRefundPaidRequest req) {
-        paymentService.markDepositRefundPaid(invoiceId, req);
+            @RequestBody @Valid MarkRefundPaidRequest req,
+            @AuthenticationPrincipal Jwt jwt) {
+        paymentService.markDepositRefundPaid(invoiceId, req, jwt.getSubject());
         return ApiResponses.ok(null, "Deposit refund confirmed");
     }
 }

@@ -404,7 +404,7 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Transactional
     @org.springframework.cache.annotation.CacheEvict(value = "finance-dashboard", allEntries = true)
-    public void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req) {
+    public void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req, String actorId) {
         RentalInvoice invoice = invoiceRepository.findById(invoiceId)
                 .orElseThrow(() -> new EntityNotFoundException("Invoice not found"));
 
@@ -435,8 +435,23 @@ public class PaymentServiceImpl implements PaymentService {
                         .messageId(UUID.randomUUID().toString())
                         .build());
 
-        log.info("[Payment] DEPOSIT_REFUND marked PAID invoiceId={} contractId={}",
-                invoiceId, invoice.getContractId());
+        log.info("[Payment] DEPOSIT_REFUND marked PAID invoiceId={} contractId={} by actor={}",
+                invoiceId, invoice.getContractId(), actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public DepositRefundInvoiceDto getDepositRefundInvoice(UUID contractId) {
+        return invoiceRepository.findByContractIdAndType(contractId, InvoiceType.DEPOSIT_REFUND)
+                .map(inv -> new DepositRefundInvoiceDto(
+                        inv.getId(),
+                        inv.getContractId(),
+                        inv.getTotalAmount(),
+                        inv.getStatus() != null ? inv.getStatus().name() : null,
+                        inv.getRefundPaymentMethod(),
+                        inv.getPaidAt(),
+                        inv.getRefundNote()))
+                .orElse(null);
     }
 
     private String createInvoicePaymentLink(CreatePaymentRequest request,

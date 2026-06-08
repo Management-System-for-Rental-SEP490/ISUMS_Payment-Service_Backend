@@ -35,7 +35,9 @@ public interface PaymentService {
     
     List<PaymentMethodOptionDto> getAvailablePaymentMethods();
 
-    void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req);
+    DepositRefundInvoiceDto getDepositRefundInvoice(UUID contractId);
+
+    void markDepositRefundPaid(UUID invoiceId, MarkRefundPaidRequest req, String actorId);
 
     String handleReturn(VNPayIpnRequest request);
 }
